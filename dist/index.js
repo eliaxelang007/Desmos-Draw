@@ -34,8 +34,6 @@ class Extent {
         return value >= this.min && value <= this.max;
     }
 }
-// #endregion
-// #region draw.ts
 class Color {
     red;
     green;
@@ -53,6 +51,9 @@ class Color {
     }
     static opaque(red, green, blue) {
         return new Color(red, green, blue, 1);
+    }
+    static monochrome(value) {
+        return Color.opaque(value, value, value);
     }
     static from_hex(hex) {
         const cleaned_hex = hex.trim().replace("#", "");
@@ -76,7 +77,7 @@ class Rectangle {
         this.size = size;
     }
 }
-class DrawableRectangle {
+class RectangleGraphic {
     rectangle;
     stroke_style;
     fill_style;
@@ -109,7 +110,7 @@ class Line {
         this.end = end;
     }
 }
-class DrawableLine {
+class LineGraphic {
     line;
     stroke_style;
     constructor(line, stroke_style) {
@@ -129,53 +130,107 @@ class DrawableLine {
         canvas.stroke();
     }
 }
-//#endregion draw.ts
-function main() {
-    const canvas_element = unwrap_option(document.getElementById("canvas"));
-    const canvas = canvas_element.getContext("2d");
-    assert(canvas !== null, "Failed to retrieve the canvas context!");
-    let width = 0;
-    let height = 0;
-    const render = () => {
-        canvas_element.width = width;
-        canvas_element.height = height;
-        const LEFT_X = 0;
-        const TOP_Y = 0;
-        const right_x = width;
-        const bottom_y = height;
-        const middle_x = width / 2;
-        const middle_y = height / 2;
-        const background = new DrawableRectangle(new Rectangle({ x: LEFT_X, y: TOP_Y }, { width: right_x, height: bottom_y }), Color.WHITE, { color: Color.BLACK, weight: 1, });
-        const x_axis = new DrawableLine(new Line({ x: middle_x, y: TOP_Y }, { x: middle_x, y: bottom_y }), { color: Color.BLACK, weight: 2, });
-        const y_axis = new DrawableLine(new Line({ x: LEFT_X, y: middle_y }, { x: right_x, y: middle_y }), { color: Color.BLACK, weight: 2, });
-        background.draw_on(canvas);
-        x_axis.draw_on(canvas);
-        y_axis.draw_on(canvas);
-    };
-    let render_request = undefined;
-    const request_render = () => {
-        if (render_request !== undefined) {
-            return;
-        }
-        render_request = requestAnimationFrame(() => {
-            render();
-            render_request = undefined;
-        });
-    };
-    const resize_canvas = (entries) => {
-        const [canvas_resize] = entries;
-        assert(canvas_resize !== undefined, "The resize observer might not be targeted on the canvas!");
-        const screen_size = canvas_resize.contentBoxSize[0];
-        assert(screen_size !== undefined, "The resize observer couldn't get a size!");
-        width = screen_size.inlineSize;
-        height = screen_size.blockSize;
-        request_render();
-    };
-    const canvas_observer = new ResizeObserver(resize_canvas);
-    canvas_observer.observe(canvas_element);
-    window.onmousemove = () => request_render();
-    window.onmousedown = () => request_render();
-    window.onmouseup = () => request_render();
+// type CanvasPosition = NewType<Position, "CanvasPosition">;
+// type MathPosition = NewType<Position, "MathPosition">;
+class MathCanvas {
+    canvas;
+    origin;
+    unit_size;
+    constructor(canvas, origin, unit_size) {
+        this.canvas = canvas;
+        this.origin = origin;
+        this.unit_size = unit_size;
+    }
+    to_canvas_x(math_x) {
+        return this.origin.x + (math_x * this.unit_size);
+    }
+    to_canvas_y(math_y) {
+        return this.origin.y + (-math_y * this.unit_size);
+    }
+    to_canvas_position(position) {
+        return {
+            x: this.to_canvas_x(position.x),
+            y: this.to_canvas_y(position.y)
+        };
+    }
+    to_math_x(canvas_x) {
+        return (canvas_x - this.origin.x) / this.unit_size;
+    }
+    to_math_y(canvas_y) {
+        return ((canvas_y - this.origin.y) / this.unit_size) * -1;
+    }
+    to_math_position(position) {
+        return {
+            x: this.to_math_x(position.x),
+            y: this.to_math_y(position.y)
+        };
+    }
 }
-main();
+class MathLineGraphic {
+    line_graphic;
+    constructor(line_graphic) {
+        this.line_graphic = line_graphic;
+    }
+    draw_on(canvas) {
+        const graphic = this.line_graphic;
+        const line = graphic.line;
+        const start = line.start;
+        const end = line.end;
+        new LineGraphic(new Line(canvas.to_canvas_position(start), canvas.to_canvas_position(end)), graphic.stroke_style).draw_on(canvas.canvas);
+    }
+}
+// #endregion math.ts
+const canvas_element = unwrap_option(document.getElementById("canvas"));
+const canvas = canvas_element.getContext("2d");
+assert(canvas !== null, "Failed to retrieve the canvas context!");
+let width = 0;
+let height = 0;
+// const unit_size = 30;
+const render = () => {
+    canvas_element.width = width;
+    canvas_element.height = height;
+    new RectangleGraphic(new Rectangle({ x: 0, y: 0 }, { width: width, height: height }), Color.WHITE, { color: Color.BLACK, weight: 1, }).draw_on(canvas);
+    const line_color = Color.monochrome(200);
+    const middle_x = width / 2;
+    const middle_y = height / 2;
+    const unit_size = 30;
+    const math_canvas = new MathCanvas(canvas, { x: middle_x, y: middle_y }, unit_size);
+    console.log("-------------");
+    console.log(math_canvas.to_canvas_y(math_canvas.to_math_y(0)));
+    console.log(height);
+    console.log(math_canvas.to_canvas_y(math_canvas.to_math_y(height)));
+    const draw_vertical_line = (at_x, weight = 1) => {
+        new MathLineGraphic(new LineGraphic(new Line({ x: at_x, y: math_canvas.to_math_y(0) }, { x: at_x, y: math_canvas.to_math_y(height) }), { color: line_color, weight: weight })).draw_on(math_canvas);
+    };
+    const draw_horizontal_line = (at_y, weight = 1) => {
+        new MathLineGraphic(new LineGraphic(new Line({ x: math_canvas.to_math_x(0), y: at_y }, { x: math_canvas.to_math_x(width), y: at_y }), { color: line_color, weight: weight })).draw_on(math_canvas);
+    };
+    draw_vertical_line(0, 2);
+    draw_horizontal_line(0, 2);
+    new MathLineGraphic(new LineGraphic(new Line({ x: 2, y: 2 }, { x: -5, y: 5 }))).draw_on(math_canvas);
+};
+let render_request = undefined;
+const request_render = () => {
+    if (render_request !== undefined) {
+        return;
+    }
+    render_request = requestAnimationFrame(() => {
+        render();
+        render_request = undefined;
+    });
+};
+const resize_canvas = (entries) => {
+    const [canvas_resize] = entries;
+    assert(canvas_resize !== undefined, "The resize observer might not be targeted on the canvas!");
+    const screen_size = canvas_resize.contentBoxSize[0];
+    assert(screen_size !== undefined, "The resize observer couldn't get a size!");
+    width = screen_size.inlineSize;
+    height = screen_size.blockSize;
+    request_render();
+};
+const canvas_observer = new ResizeObserver(resize_canvas);
+canvas_observer.observe(canvas_element);
+window.addEventListener("mousemove", () => request_render());
+window.addEventListener("mousedown", () => request_render());
+window.addEventListener("mouseup", () => request_render());
 //# sourceMappingURL=index.js.map
