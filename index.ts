@@ -1,4 +1,4 @@
-//#region asserts.ts
+// #region asserts.ts
 
 class AssertionError extends Error { }
 
@@ -23,9 +23,9 @@ function unwrap_option<T>(option: T | undefined | null): T {
 
 // #endregion options.ts
 
-// #region draw.ts
+// #region extent.ts
 
-class MinMax {
+class Extent {
     readonly min: number;
     readonly max: number;
 
@@ -45,6 +45,10 @@ class MinMax {
     }
 }
 
+// #endregion
+
+// #region draw.ts
+
 class Color {
     readonly red: number;
     readonly green: number;
@@ -52,13 +56,11 @@ class Color {
     readonly alpha: number;
 
     constructor(red: number, green: number, blue: number, alpha: number) {
-        const BIT_8_RANGE = new MinMax(0, 255);
-        const PERCENTAGE_RANGE = new MinMax(0, 1);
+        const BIT_8_RANGE = new Extent(0, 255);
+        const PERCENTAGE_RANGE = new Extent(0, 1);
 
         assert(
-            BIT_8_RANGE.contains(red) &&
-            BIT_8_RANGE.contains(green) &&
-            BIT_8_RANGE.contains(blue),
+            [red, green, blue].every((color) => BIT_8_RANGE.contains(color)),
             `One of your color values (${red}, ${green}, ${blue}) isn't in an 8-bit range!`
         );
 
@@ -115,11 +117,13 @@ type Size = {
 
 type StrokeStyle = {
     weight: number;
-    color: Color
+    color: Color;
 };
 
+type FillStyle = Color;
+
 interface Drawable {
-    draw(canvas: CanvasRenderingContext2D): void;
+    draw_on(canvas: CanvasRenderingContext2D): void;
 }
 
 class Rectangle {
@@ -133,18 +137,18 @@ class Rectangle {
 }
 
 class DrawableRectangle implements Drawable {
-    readonly fill_color: Color;
+    readonly fill_style: FillStyle;
 
     constructor(
         readonly rectangle: Rectangle,
-        fill_color?: Color,
+        fill_color?: FillStyle,
         readonly stroke_style?: StrokeStyle
     ) {
-        this.fill_color = fill_color ?? Color.WHITE;
+        this.fill_style = fill_color ?? Color.WHITE;
     }
 
-    draw(canvas: CanvasRenderingContext2D): void {
-        canvas.fillStyle = this.fill_color.to_style();
+    draw_on(canvas: CanvasRenderingContext2D): void {
+        canvas.fillStyle = this.fill_style.to_style();
 
         const rectangle = this.rectangle;
         const top_left = rectangle.top_left;
@@ -183,12 +187,11 @@ class DrawableLine implements Drawable {
         this.stroke_style = stroke_style ?? { color: Color.BLACK, weight: 1 };
     }
 
-    draw(canvas: CanvasRenderingContext2D): void {
+    draw_on(canvas: CanvasRenderingContext2D): void {
         const stroke_style = this.stroke_style;
 
         canvas.lineWidth = stroke_style.weight;
         canvas.strokeStyle = stroke_style.color.to_style();
-        console.log(stroke_style.color.to_style());
 
         canvas.beginPath();
 
@@ -203,13 +206,18 @@ class DrawableLine implements Drawable {
     }
 }
 
+//#endregion draw.ts
+
 function main() {
     const canvas_element = unwrap_option(document.getElementById("canvas")) as HTMLCanvasElement;
     const canvas = canvas_element.getContext("2d");
 
     assert(canvas !== null, "Failed to retrieve the canvas context!");
 
-    const render = (width: number, height: number) => {
+    let width = 0;
+    let height = 0;
+
+    const render = () => {
         canvas_element.width = width;
         canvas_element.height = height;
 
@@ -238,10 +246,25 @@ function main() {
             { color: Color.BLACK, weight: 2, }
         );
 
-        background.draw(canvas);
-        x_axis.draw(canvas);
-        y_axis.draw(canvas);
+        background.draw_on(canvas);
+        x_axis.draw_on(canvas);
+        y_axis.draw_on(canvas);
     };
+
+    let render_request: number | undefined = undefined;
+
+    const request_render = () => {
+        if (render_request !== undefined) {
+            return;
+        }
+
+        render_request = requestAnimationFrame(
+            () => {
+                render();
+                render_request = undefined;
+            }
+        );
+    }
 
     const resize_canvas = (entries: ResizeObserverEntry[]) => {
         const [canvas_resize] = entries;
@@ -250,11 +273,18 @@ function main() {
         const screen_size = canvas_resize.contentBoxSize[0];
         assert(screen_size !== undefined, "The resize observer couldn't get a size!")
 
-        render(screen_size.inlineSize, screen_size.blockSize);
+        width = screen_size.inlineSize;
+        height = screen_size.blockSize;
+
+        request_render();
     };
 
     const canvas_observer = new ResizeObserver(resize_canvas);
     canvas_observer.observe(canvas_element);
+
+    window.onmousemove = () => request_render();
+    window.onmousedown = () => request_render();
+    window.onmouseup = () => request_render();
 }
 
 main();
