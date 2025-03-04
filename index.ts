@@ -12,6 +12,14 @@ function assert(condition: boolean, message: string): asserts condition {
 
 // #region options.ts
 
+function map_option<T, U>(option: T | undefined, mapper: (from: T) => U): U | undefined {
+    if (option === undefined) {
+        return undefined;
+    }
+
+    return mapper(option);
+}
+
 function is_some_option<T>(option: T | undefined): option is T {
     return option !== undefined;
 }
@@ -40,8 +48,17 @@ class Extent {
         this.max = b;
     }
 
-    contains(value: number) {
+    contains(value: number): boolean {
         return value >= this.min && value <= this.max;
+    }
+
+    percentage(value: number): Percentage {
+        const min = this.min;
+
+        const range = this.max - min;
+        const range_location = value - min;
+
+        return (range_location / range) as Percentage;
     }
 }
 
@@ -49,6 +66,10 @@ class Extent {
 
 // #region draw.ts
 type NewType<T, Brand> = T & { __brand: Brand };
+
+interface Drawable {
+    draw(canvas: CanvasRenderingContext2D): void;
+}
 
 class Color {
     readonly red: number;
@@ -115,19 +136,8 @@ type Position = {
     y: number;
 };
 
-type CanvasAxis = NewType<number, "CanvasAxis">;
-
-type CanvasPosition = {
-    x: CanvasAxis;
-    y: CanvasAxis;
-};
-
-type MathAxis = NewType<number, "MathAxis">;
-
-type MathPosition = {
-    x: MathAxis;
-    y: MathAxis;
-};
+type Radians = NewType<number, "Radians">;
+type Percentage = NewType<number, "Percentage">;
 
 type Size = {
     width: number;
@@ -140,10 +150,6 @@ type StrokeStyle = {
 };
 
 type FillStyle = NewType<Color, "FillStyle">;
-
-interface Drawable {
-    draw_on(canvas: CanvasRenderingContext2D): void;
-}
 
 class Rectangle {
     readonly top_left: Position;
@@ -166,7 +172,7 @@ class RectangleGraphic implements Drawable {
         this.fill_style = fill_color ?? Color.WHITE as FillStyle;
     }
 
-    draw_on(canvas: CanvasRenderingContext2D): void {
+    draw(canvas: CanvasRenderingContext2D): void {
         canvas.fillStyle = this.fill_style.to_style();
 
         const rectangle = this.rectangle;
@@ -175,17 +181,20 @@ class RectangleGraphic implements Drawable {
 
         const stroke_style = this.stroke_style;
 
-        let drawer = () => canvas.fill();
+        canvas.rect(top_left.x, top_left.y, size.width, size.height);
+
+        canvas.fill();
 
         if (stroke_style !== undefined) {
-            canvas.lineWidth = stroke_style.weight;
+            const unit_line_width = canvas.lineWidth;
+
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
             canvas.strokeStyle = stroke_style.color.to_style();
 
-            drawer = () => { canvas.fill(); canvas.stroke(); }
-        }
+            canvas.stroke();
 
-        canvas.rect(top_left.x, top_left.y, size.width, size.height);
-        drawer();
+            canvas.lineWidth = unit_line_width;
+        }
     }
 }
 
@@ -206,11 +215,8 @@ class LineGraphic implements Drawable {
         this.stroke_style = stroke_style ?? { color: Color.BLACK, weight: 1 };
     }
 
-    draw_on(canvas: CanvasRenderingContext2D): void {
+    draw(canvas: CanvasRenderingContext2D): void {
         const stroke_style = this.stroke_style;
-
-        canvas.lineWidth = stroke_style.weight;
-        canvas.strokeStyle = stroke_style.color.to_style();
 
         canvas.beginPath();
 
@@ -221,80 +227,57 @@ class LineGraphic implements Drawable {
 
         canvas.moveTo(start.x, start.y);
         canvas.lineTo(end.x, end.y);
+
+        const unit_line_width = canvas.lineWidth;
+
+        canvas.lineWidth = stroke_style.weight * unit_line_width;
+        canvas.strokeStyle = stroke_style.color.to_style();
+
         canvas.stroke();
+
+        canvas.lineWidth = unit_line_width;
+    }
+}
+
+class Transform {
+    constructor(
+        readonly transform: {
+            translation?: Position,
+            scaling?: {
+                percentage: Percentage,
+                signs: {
+                    x: 1 | -1,
+                    y: 1 | -1
+                }
+            },
+            rotation?: Radians
+        }
+    ) { }
+
+    apply(canvas: CanvasRenderingContext2D, draw: (canvas: CanvasRenderingContext2D) => void) {
+        canvas.save();
+
+        const transform = this.transform;
+
+        map_option(transform.translation, (translation) => canvas.translate(translation.x, translation.y));
+        map_option(transform.scaling, (scaling) => {
+            const percentage = scaling.percentage;
+            const signs = scaling.signs;
+
+            canvas.lineWidth = 1 / percentage;
+
+            canvas.scale(percentage * signs.x, percentage * signs.y);
+        });
+        map_option(transform.rotation, (rotation) => canvas.rotate(rotation));
+
+        draw(canvas);
+
+        canvas.restore();
     }
 }
 
 // #endregion draw.ts
 
-// #region math.ts
-
-interface MathDrawable {
-    draw_on(canvas: MathCanvas): void;
-}
-
-// type CanvasPosition = NewType<Position, "CanvasPosition">;
-// type MathPosition = NewType<Position, "MathPosition">;
-
-class MathCanvas {
-    constructor(
-        readonly canvas: CanvasRenderingContext2D,
-        readonly origin: CanvasPosition,
-        readonly unit_size: number
-    ) { }
-
-    to_canvas_x(x: MathAxis): CanvasAxis {
-        return (this.origin.x + (x * this.unit_size)) as CanvasAxis;
-    }
-
-    to_canvas_y(y: MathAxis): CanvasAxis {
-        return (this.origin.y + (-y * this.unit_size)) as CanvasAxis;
-    }
-
-    to_canvas_position(position: MathPosition): CanvasPosition {
-        return {
-            x: this.to_canvas_x(position.x),
-            y: this.to_canvas_y(position.y)
-        } as CanvasPosition;
-    }
-
-    to_math_x(x: CanvasAxis): MathAxis {
-        return ((x - this.origin.x) / this.unit_size) as MathAxis;
-    }
-
-    to_math_y(y: CanvasAxis): MathAxis {
-        return (((y - this.origin.y) / this.unit_size) * -1) as MathAxis;
-    }
-
-    to_math_position(position: CanvasPosition): MathPosition {
-        return {
-            x: this.to_math_x(position.x),
-            y: this.to_math_y(position.y)
-        } as MathPosition;
-    }
-}
-
-class MathLineGraphic implements MathDrawable {
-    constructor(
-        readonly line_graphic: LineGraphic
-    ) {
-    }
-
-    draw_on(canvas: MathCanvas): void {
-        const graphic = this.line_graphic;
-
-        const line = graphic.line;
-        const start = line.start;
-        const end = line.end;
-
-        new LineGraphic(
-            new Line(canvas.to_canvas_position(start as MathPosition), canvas.to_canvas_position(end as MathPosition)),
-            graphic.stroke_style
-        ).draw_on(canvas.canvas);
-    }
-}
-
-// #endregion math.ts
 
 const canvas_element = unwrap_option(document.getElementById("canvas")) as HTMLCanvasElement;
 const canvas = canvas_element.getContext("2d");
@@ -315,49 +298,95 @@ const render = () => {
         new Rectangle({ x: 0, y: 0 }, { width: width, height: height }),
         Color.WHITE as FillStyle,
         { color: Color.BLACK, weight: 1, }
-    ).draw_on(canvas);
-
-    const line_color = Color.monochrome(200);
+    ).draw(canvas);
 
     const middle_x = width / 2;
     const middle_y = height / 2;
 
-    const unit_size = 30;
+    const cartesian_transform = new Transform(
+        {
+            scaling: { percentage: 30 as Percentage, signs: { x: 1, y: -1 } },
+            translation: { x: middle_x, y: middle_y }
+        }
+    );
 
-    const math_canvas = new MathCanvas(canvas, { x: middle_x, y: middle_y } as CanvasPosition, unit_size);
+    cartesian_transform.apply(
+        canvas,
+        (canvas) => {
+            const line_color = Color.monochrome(200);
 
-    const draw_vertical_line = (at_x: number, weight: number = 1) => {
-        new MathLineGraphic(
-            new LineGraphic(
-                new Line(
-                    { x: at_x, y: math_canvas.to_math_y(0 as CanvasAxis) },
-                    { x: at_x, y: math_canvas.to_math_y(height as CanvasAxis) }
-                ),
-                { color: line_color, weight: weight }
-            )
-        ).draw_on(math_canvas);
-    };
+            // const draw_vertical_line = (at_x: number, weight: number = 1) => {
+            //     new LineGraphic(
+            //         new Line(
+            //             { x: at_x, y: canvas.to_math_y(0 as CanvasAxis) },
+            //             { x: at_x, y: canvas.to_math_y(height as CanvasAxis) }
+            //         ),
+            //         { color: line_color, weight: weight }
+            //     ).draw(canvas);
+            // };
 
-    const draw_horizontal_line = (at_y: number, weight: number = 1) => {
-        new MathLineGraphic(
-            new LineGraphic(
-                new Line(
-                    { x: math_canvas.to_math_x(0 as CanvasAxis), y: at_y },
-                    { x: math_canvas.to_math_x(width as CanvasAxis), y: at_y }
-                ),
-                { color: line_color, weight: weight }
-            )
-        ).draw_on(math_canvas);
-    }
+            // const draw_horizontal_line = (at_y: number, weight: number = 1) => {
+            //     new LineGraphic(
+            //         new Line(
+            //             { x: canvas.to_math_x(0 as CanvasAxis), y: at_y },
+            //             { x: canvas.to_math_x(width as CanvasAxis), y: at_y }
+            //         ),
+            //         { color: line_color, weight: weight }
+            //     ).draw(canvas);
+            // }
 
-    let
+            // const draw_axis_gridlines = (
+            //     axis: "x" | "y"
+            // ) => {
+            //     let [draw_line, to_math, to_canvas, middle, canvas_end, step] = 
+            //         (axis === "x") ? 
+            //             [draw_vertical_line, canvas.to_math_x, canvas.to_canvas_x, middle_x, width, 1] : 
+            //             [draw_horizontal_line, math_canvas.to_math_y, canvas.to_canvas_y, middle_y, height, -1]; 
 
-        draw_vertical_line(0, 2);
-    draw_horizontal_line(0, 2);
+            //     let start_position = to_math((middle % unit_size) as CanvasAxis);
 
-    new MathLineGraphic(
-        new LineGraphic(new Line({ x: 2, y: 2 }, { x: -5, y: 5 })),
-    ).draw_on(math_canvas);
+            //     while (to_canvas(start_position) < canvas_end) {
+            //         draw_line(start_position);
+
+            //         start_position = (start_position + step) as MathAxis;
+            //     }
+            // };
+
+            // // let start_math_x = math_canvas.to_math_x((middle_x % unit_size) as CanvasAxis);
+
+            // // while (math_canvas.to_canvas_x(start_math_x) < width) {
+            // //     draw_vertical_line(start_math_x);
+
+            // //     start_math_x = (start_math_x + 1) as MathAxis;
+            // // }
+
+            // // let start_math_y = math_canvas.to_math_y((middle_y % unit_size) as CanvasAxis);
+
+            // // while (math_canvas.to_canvas_y(start_math_y) < height) {
+            // //     draw_horizontal_line(start_math_y);
+
+            // //     start_math_y = (start_math_y - 1) as MathAxis;
+            // // }
+
+            // draw_axis_gridlines();
+
+            // draw_vertical_line(0, 2);
+            // draw_horizontal_line(0, 2);
+
+            const radius = 1;
+
+            canvas.beginPath();
+            canvas.arc(0, 0, radius, 0, 2 * Math.PI, false);
+            canvas.fillStyle = 'green';
+            canvas.fill();
+            // canvas.lineWidth = 5 / 30;
+            canvas.strokeStyle = '#003300';
+            canvas.stroke();
+
+            new LineGraphic(new Line({ x: 2, y: 2 }, { x: -5, y: 5 })).draw(canvas);
+        }
+    );
+
 };
 
 let render_request: number | undefined = undefined;

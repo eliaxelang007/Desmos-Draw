@@ -9,6 +9,12 @@ function assert(condition, message) {
 }
 //#endregion asserts.ts
 // #region options.ts
+function map_option(option, mapper) {
+    if (option === undefined) {
+        return undefined;
+    }
+    return mapper(option);
+}
 function is_some_option(option) {
     return option !== undefined;
 }
@@ -32,6 +38,12 @@ class Extent {
     }
     contains(value) {
         return value >= this.min && value <= this.max;
+    }
+    percentage(value) {
+        const min = this.min;
+        const range = this.max - min;
+        const range_location = value - min;
+        return (range_location / range);
     }
 }
 class Color {
@@ -86,20 +98,21 @@ class RectangleGraphic {
         this.stroke_style = stroke_style;
         this.fill_style = fill_color ?? Color.WHITE;
     }
-    draw_on(canvas) {
+    draw(canvas) {
         canvas.fillStyle = this.fill_style.to_style();
         const rectangle = this.rectangle;
         const top_left = rectangle.top_left;
         const size = rectangle.size;
         const stroke_style = this.stroke_style;
-        let drawer = () => canvas.fill();
-        if (stroke_style !== undefined) {
-            canvas.lineWidth = stroke_style.weight;
-            canvas.strokeStyle = stroke_style.color.to_style();
-            drawer = () => { canvas.fill(); canvas.stroke(); };
-        }
         canvas.rect(top_left.x, top_left.y, size.width, size.height);
-        drawer();
+        canvas.fill();
+        if (stroke_style !== undefined) {
+            const unit_line_width = canvas.lineWidth;
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
+            canvas.strokeStyle = stroke_style.color.to_style();
+            canvas.stroke();
+            canvas.lineWidth = unit_line_width;
+        }
     }
 }
 class Line {
@@ -117,69 +130,42 @@ class LineGraphic {
         this.line = line;
         this.stroke_style = stroke_style ?? { color: Color.BLACK, weight: 1 };
     }
-    draw_on(canvas) {
+    draw(canvas) {
         const stroke_style = this.stroke_style;
-        canvas.lineWidth = stroke_style.weight;
-        canvas.strokeStyle = stroke_style.color.to_style();
         canvas.beginPath();
         const line = this.line;
         const start = line.start;
         const end = line.end;
         canvas.moveTo(start.x, start.y);
         canvas.lineTo(end.x, end.y);
+        const unit_line_width = canvas.lineWidth;
+        canvas.lineWidth = stroke_style.weight * unit_line_width;
+        canvas.strokeStyle = stroke_style.color.to_style();
         canvas.stroke();
+        canvas.lineWidth = unit_line_width;
     }
 }
-// type CanvasPosition = NewType<Position, "CanvasPosition">;
-// type MathPosition = NewType<Position, "MathPosition">;
-class MathCanvas {
-    canvas;
-    origin;
-    unit_size;
-    constructor(canvas, origin, unit_size) {
-        this.canvas = canvas;
-        this.origin = origin;
-        this.unit_size = unit_size;
+class Transform {
+    transform;
+    constructor(transform) {
+        this.transform = transform;
     }
-    to_canvas_x(math_x) {
-        return this.origin.x + (math_x * this.unit_size);
-    }
-    to_canvas_y(math_y) {
-        return this.origin.y + (-math_y * this.unit_size);
-    }
-    to_canvas_position(position) {
-        return {
-            x: this.to_canvas_x(position.x),
-            y: this.to_canvas_y(position.y)
-        };
-    }
-    to_math_x(canvas_x) {
-        return (canvas_x - this.origin.x) / this.unit_size;
-    }
-    to_math_y(canvas_y) {
-        return ((canvas_y - this.origin.y) / this.unit_size) * -1;
-    }
-    to_math_position(position) {
-        return {
-            x: this.to_math_x(position.x),
-            y: this.to_math_y(position.y)
-        };
+    apply(canvas, draw) {
+        canvas.save();
+        const transform = this.transform;
+        map_option(transform.translation, (translation) => canvas.translate(translation.x, translation.y));
+        map_option(transform.scaling, (scaling) => {
+            const percentage = scaling.percentage;
+            const signs = scaling.signs;
+            canvas.lineWidth = 1 / percentage;
+            canvas.scale(percentage * signs.x, percentage * signs.y);
+        });
+        map_option(transform.rotation, (rotation) => canvas.rotate(rotation));
+        draw(canvas);
+        canvas.restore();
     }
 }
-class MathLineGraphic {
-    line_graphic;
-    constructor(line_graphic) {
-        this.line_graphic = line_graphic;
-    }
-    draw_on(canvas) {
-        const graphic = this.line_graphic;
-        const line = graphic.line;
-        const start = line.start;
-        const end = line.end;
-        new LineGraphic(new Line(canvas.to_canvas_position(start), canvas.to_canvas_position(end)), graphic.stroke_style).draw_on(canvas.canvas);
-    }
-}
-// #endregion math.ts
+// #endregion draw.ts
 const canvas_element = unwrap_option(document.getElementById("canvas"));
 const canvas = canvas_element.getContext("2d");
 assert(canvas !== null, "Failed to retrieve the canvas context!");
@@ -189,25 +175,69 @@ let height = 0;
 const render = () => {
     canvas_element.width = width;
     canvas_element.height = height;
-    new RectangleGraphic(new Rectangle({ x: 0, y: 0 }, { width: width, height: height }), Color.WHITE, { color: Color.BLACK, weight: 1, }).draw_on(canvas);
-    const line_color = Color.monochrome(200);
+    new RectangleGraphic(new Rectangle({ x: 0, y: 0 }, { width: width, height: height }), Color.WHITE, { color: Color.BLACK, weight: 1, }).draw(canvas);
     const middle_x = width / 2;
     const middle_y = height / 2;
-    const unit_size = 30;
-    const math_canvas = new MathCanvas(canvas, { x: middle_x, y: middle_y }, unit_size);
-    console.log("-------------");
-    console.log(math_canvas.to_canvas_y(math_canvas.to_math_y(0)));
-    console.log(height);
-    console.log(math_canvas.to_canvas_y(math_canvas.to_math_y(height)));
-    const draw_vertical_line = (at_x, weight = 1) => {
-        new MathLineGraphic(new LineGraphic(new Line({ x: at_x, y: math_canvas.to_math_y(0) }, { x: at_x, y: math_canvas.to_math_y(height) }), { color: line_color, weight: weight })).draw_on(math_canvas);
-    };
-    const draw_horizontal_line = (at_y, weight = 1) => {
-        new MathLineGraphic(new LineGraphic(new Line({ x: math_canvas.to_math_x(0), y: at_y }, { x: math_canvas.to_math_x(width), y: at_y }), { color: line_color, weight: weight })).draw_on(math_canvas);
-    };
-    draw_vertical_line(0, 2);
-    draw_horizontal_line(0, 2);
-    new MathLineGraphic(new LineGraphic(new Line({ x: 2, y: 2 }, { x: -5, y: 5 }))).draw_on(math_canvas);
+    const cartesian_transform = new Transform({
+        scaling: { percentage: 30, signs: { x: 1, y: -1 } },
+        translation: { x: middle_x, y: middle_y }
+    });
+    cartesian_transform.apply(canvas, (canvas) => {
+        const line_color = Color.monochrome(200);
+        // const draw_vertical_line = (at_x: number, weight: number = 1) => {
+        //     new LineGraphic(
+        //         new Line(
+        //             { x: at_x, y: canvas.to_math_y(0 as CanvasAxis) },
+        //             { x: at_x, y: canvas.to_math_y(height as CanvasAxis) }
+        //         ),
+        //         { color: line_color, weight: weight }
+        //     ).draw(canvas);
+        // };
+        // const draw_horizontal_line = (at_y: number, weight: number = 1) => {
+        //     new LineGraphic(
+        //         new Line(
+        //             { x: canvas.to_math_x(0 as CanvasAxis), y: at_y },
+        //             { x: canvas.to_math_x(width as CanvasAxis), y: at_y }
+        //         ),
+        //         { color: line_color, weight: weight }
+        //     ).draw(canvas);
+        // }
+        // const draw_axis_gridlines = (
+        //     axis: "x" | "y"
+        // ) => {
+        //     let [draw_line, to_math, to_canvas, middle, canvas_end, step] = 
+        //         (axis === "x") ? 
+        //             [draw_vertical_line, canvas.to_math_x, canvas.to_canvas_x, middle_x, width, 1] : 
+        //             [draw_horizontal_line, math_canvas.to_math_y, canvas.to_canvas_y, middle_y, height, -1]; 
+        //     let start_position = to_math((middle % unit_size) as CanvasAxis);
+        //     while (to_canvas(start_position) < canvas_end) {
+        //         draw_line(start_position);
+        //         start_position = (start_position + step) as MathAxis;
+        //     }
+        // };
+        // // let start_math_x = math_canvas.to_math_x((middle_x % unit_size) as CanvasAxis);
+        // // while (math_canvas.to_canvas_x(start_math_x) < width) {
+        // //     draw_vertical_line(start_math_x);
+        // //     start_math_x = (start_math_x + 1) as MathAxis;
+        // // }
+        // // let start_math_y = math_canvas.to_math_y((middle_y % unit_size) as CanvasAxis);
+        // // while (math_canvas.to_canvas_y(start_math_y) < height) {
+        // //     draw_horizontal_line(start_math_y);
+        // //     start_math_y = (start_math_y - 1) as MathAxis;
+        // // }
+        // draw_axis_gridlines();
+        // draw_vertical_line(0, 2);
+        // draw_horizontal_line(0, 2);
+        const radius = 1;
+        canvas.beginPath();
+        canvas.arc(0, 0, radius, 0, 2 * Math.PI, false);
+        canvas.fillStyle = 'green';
+        canvas.fill();
+        // canvas.lineWidth = 5 / 30;
+        canvas.strokeStyle = '#003300';
+        canvas.stroke();
+        new LineGraphic(new Line({ x: 2, y: 2 }, { x: -5, y: 5 })).draw(canvas);
+    });
 };
 let render_request = undefined;
 const request_render = () => {
