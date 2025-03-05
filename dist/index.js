@@ -53,15 +53,13 @@ CanvasRenderingContext2D.prototype.transform_point = function (untransformed_poi
 CanvasRenderingContext2D.prototype.untransform_point = function (transformed_point) {
     return transformed_point.matrixTransform(this.getTransform());
 };
-CanvasRenderingContext2D.prototype.average_unit_size = function () {
+CanvasRenderingContext2D.prototype.unit_size = function () {
     const matrix = this.getTransform();
     const x_scale = matrix.a;
     const y_skew = matrix.b;
     const x_skew = matrix.c;
     const y_scale = matrix.d;
-    const pure_x_scale = Math.sqrt((x_scale * x_scale) + (y_skew * y_skew));
-    const pure_y_scale = Math.sqrt((y_scale * y_scale) + (x_skew * x_skew));
-    return ((pure_x_scale + pure_y_scale) / 2);
+    return { width: Math.sqrt((x_scale * x_scale) + (y_skew * y_skew)), height: Math.sqrt((y_scale * y_scale) + (x_skew * x_skew)) };
 };
 class Color {
     red;
@@ -190,18 +188,47 @@ class LineSegmentGraphic {
         canvas.lineWidth = unit_line_width;
     }
 }
-class NumberPlane {
-    unit_size;
-    constructor(unit_size) {
-        this.unit_size = unit_size;
+class Ellipse {
+    center;
+    horizontal_radius;
+    vertical_radius;
+    constructor(center, horizontal_radius, vertical_radius) {
+        this.center = center;
+        this.horizontal_radius = horizontal_radius;
+        this.vertical_radius = vertical_radius;
+    }
+}
+class EllipseGraphic {
+    ellipse;
+    stroke_style;
+    fill_style;
+    constructor(ellipse, fill_color, stroke_style) {
+        this.ellipse = ellipse;
+        this.stroke_style = stroke_style;
+        this.fill_style = fill_color ?? Color.WHITE;
+    }
+    draw(canvas) {
+        canvas.fillStyle = this.fill_style.to_style();
+        const ellipse = this.ellipse;
+        const center = ellipse.center;
+        const horizontal_radius = ellipse.horizontal_radius;
+        const vertical_radius = ellipse.vertical_radius;
+        const stroke_style = this.stroke_style;
+        canvas.ellipse(center.x, center.y, horizontal_radius, vertical_radius, 0, 0, 2 * Math.PI);
+        canvas.fill();
+        if (stroke_style !== undefined) {
+            const unit_line_width = canvas.lineWidth;
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
+            canvas.strokeStyle = stroke_style.color.to_style();
+            canvas.stroke();
+            canvas.lineWidth = unit_line_width;
+        }
     }
 }
 class NumberPlaneGraphic {
-    number_plane;
     axis_style;
     tick_line_style;
-    constructor(number_plane, axis_style, tick_line_style) {
-        this.number_plane = number_plane;
+    constructor(axis_style, tick_line_style) {
         this.axis_style = axis_style;
         this.tick_line_style = tick_line_style;
     }
@@ -214,9 +241,9 @@ class NumberPlaneGraphic {
         };
         const tick_line_style = this.tick_line_style;
         const ZERO = new DOMPoint(0, 0);
-        const unit_size = this.number_plane.unit_size;
+        const unit_size = canvas.unit_size();
         const screen_origin = canvas.untransform_point(ZERO);
-        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size, screen_origin.y % unit_size));
+        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size.width, screen_origin.y % unit_size.height));
         const canvas_element = canvas.canvas;
         const end_positions = canvas.transform_point(new DOMPoint(canvas_element.width, canvas_element.height));
         while (start_positions.x < end_positions.x) {
@@ -262,17 +289,28 @@ class Transform {
     draw(canvas) {
         const matrix = this.matrix;
         canvas.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
-        canvas.lineWidth = 1 / canvas.average_unit_size();
+        const unit_size = canvas.unit_size();
+        canvas.lineWidth = 1 / ((unit_size.width + unit_size.height) / 2);
     }
 }
 // #endregion draw.ts
 const canvas_element = unwrap_option(document.getElementById("canvas"));
 const canvas = canvas_element.getContext("2d");
 assert(canvas !== null, "Failed to retrieve the canvas context!");
-const selected = 0;
-const elements = new Map([
+class Shapes {
+    selected;
+    shapes;
+    constructor(shapes, selected) {
+        this.selected = selected;
+        this.shapes = shapes ?? new Map();
+    }
+    entries() {
+        return this.shapes.entries();
+    }
+}
+const shapes = new Shapes(new Map([
     [0, new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5))]
-]);
+]));
 canvas_element.addEventListener("mousedown", (event) => {
     // const area = canvas_element.getBoundingClientRect();
     // const position = canvas.transform_point(
@@ -293,13 +331,13 @@ const render = () => {
     const cartesian = Transform.translate_scale(new DOMPoint(middle_x, middle_y), unit_size, false, true);
     cartesian.draw(canvas);
     const line_color = Color.monochrome(200);
-    new NumberPlaneGraphic(new NumberPlane(30), { color: line_color, weight: 2 }, { color: line_color, weight: 1 }).draw(canvas);
-    for (const [id, element] of elements.entries()) {
-        if (element instanceof Line) {
-            new LineSegmentGraphic(element).draw(canvas);
+    new NumberPlaneGraphic({ color: line_color, weight: 2 }, { color: line_color, weight: 1 }).draw(canvas);
+    for (const [id, shape] of shapes.entries()) {
+        if (shape instanceof Line) {
+            new LineSegmentGraphic(shape).draw(canvas);
         }
-        if (id == selected) {
-            for (const control_point of Object.values(element)) {
+        if (id === shapes.selected) {
+            for (const control_point of Object.values(shape)) {
             }
         }
     }

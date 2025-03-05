@@ -72,12 +72,13 @@ function modulo(dividend: number, divisor: number): number {
 // #endregion numbers.ts
 
 // #region draw.ts
+
 type NewType<T, Brand> = T & { __brand: Brand };
 
 interface CanvasRenderingContext2D {
     transform_point(untransformed_point: DOMPoint): DOMPoint;
     untransform_point(transformed_point: DOMPoint): DOMPoint;
-    average_unit_size(): Percentage;
+    unit_size(): Size;
 }
 
 CanvasRenderingContext2D.prototype.transform_point = function (untransformed_point: DOMPoint): DOMPoint {
@@ -88,18 +89,15 @@ CanvasRenderingContext2D.prototype.untransform_point = function (transformed_poi
     return transformed_point.matrixTransform(this.getTransform());
 }
 
-CanvasRenderingContext2D.prototype.average_unit_size = function (): Percentage {
+CanvasRenderingContext2D.prototype.unit_size = function (): Size {
     const matrix = this.getTransform();
 
     const x_scale = matrix.a;
     const y_skew = matrix.b;
     const x_skew = matrix.c;
-    const y_scale = matrix.d
+    const y_scale = matrix.d;
 
-    const pure_x_scale = Math.sqrt((x_scale * x_scale) + (y_skew * y_skew));
-    const pure_y_scale = Math.sqrt((y_scale * y_scale) + (x_skew * x_skew));
-
-    return ((pure_x_scale + pure_y_scale) / 2) as Percentage;
+    return { width: Math.sqrt((x_scale * x_scale) + (y_skew * y_skew)), height: Math.sqrt((y_scale * y_scale) + (x_skew * x_skew)) };
 }
 
 interface Drawable {
@@ -308,16 +306,54 @@ class LineSegmentGraphic implements Drawable {
     }
 }
 
-class NumberPlane {
+class Ellipse {
     constructor(
-        readonly unit_size: Percentage
+        readonly center: DOMPoint,
+        readonly horizontal_radius: number,
+        readonly vertical_radius: number
+    ) { }
+}
+
+class EllipseGraphic implements Drawable {
+    readonly fill_style: FillStyle;
+
+    constructor(
+        readonly ellipse: Ellipse,
+        fill_color?: FillStyle,
+        readonly stroke_style?: StrokeStyle
     ) {
+        this.fill_style = fill_color ?? Color.WHITE as FillStyle;
+    }
+
+    draw(canvas: CanvasRenderingContext2D): void {
+        canvas.fillStyle = this.fill_style.to_style();
+
+        const ellipse = this.ellipse;
+        const center = ellipse.center;
+        const horizontal_radius = ellipse.horizontal_radius;
+        const vertical_radius = ellipse.vertical_radius;
+
+        const stroke_style = this.stroke_style;
+
+        canvas.ellipse(center.x, center.y, horizontal_radius, vertical_radius, 0, 0, 2 * Math.PI);
+
+        canvas.fill();
+
+        if (stroke_style !== undefined) {
+            const unit_line_width = canvas.lineWidth;
+
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
+            canvas.strokeStyle = stroke_style.color.to_style();
+
+            canvas.stroke();
+
+            canvas.lineWidth = unit_line_width;
+        }
     }
 }
 
 class NumberPlaneGraphic implements Drawable {
     constructor(
-        readonly number_plane: NumberPlane,
         readonly axis_style: StrokeStyle,
         readonly tick_line_style: StrokeStyle
     ) {
@@ -342,10 +378,10 @@ class NumberPlaneGraphic implements Drawable {
 
         const ZERO = new DOMPoint(0, 0);
 
-        const unit_size = this.number_plane.unit_size;
+        const unit_size = canvas.unit_size();
         const screen_origin = canvas.untransform_point(ZERO);
 
-        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size, screen_origin.y % unit_size));
+        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size.width, screen_origin.y % unit_size.height));
 
         const canvas_element = canvas.canvas;
 
@@ -432,7 +468,9 @@ class Transform implements Drawable {
             matrix.f,
         );
 
-        canvas.lineWidth = 1 / canvas.average_unit_size();
+        const unit_size = canvas.unit_size();
+
+        canvas.lineWidth = 1 / ((unit_size.width + unit_size.height) / 2);
     }
 
     // transform(point: DOMPoint): DOMPoint {
@@ -451,11 +489,26 @@ const canvas = canvas_element.getContext("2d");
 
 assert(canvas !== null, "Failed to retrieve the canvas context!");
 
-const selected = 0;
+type Shape = Line;
 
-const elements = new Map([
+class Shapes {
+    readonly shapes: Map<number, Shape>
+
+    constructor(
+        shapes?: Map<number, Shape>,
+        public selected?: number
+    ) {
+        this.shapes = shapes ?? new Map();
+    }
+
+    entries(): IterableIterator<[number, Shape]> {
+        return this.shapes.entries();
+    }
+}
+
+const shapes = new Shapes(new Map([
     [0, new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5))]
-]);
+]));
 
 canvas_element.addEventListener("mousedown", (event) => {
     // const area = canvas_element.getBoundingClientRect();
@@ -497,20 +550,19 @@ const render = () => {
     const line_color = Color.monochrome(200);
 
     new NumberPlaneGraphic(
-        new NumberPlane(30 as Percentage),
         { color: line_color, weight: 2 },
         { color: line_color, weight: 1 }
     ).draw(canvas);
 
-    for (const [id, element] of elements.entries()) {
-        if (element instanceof Line) {
+    for (const [id, shape] of shapes.entries()) {
+        if (shape instanceof Line) {
             new LineSegmentGraphic(
-                element,
+                shape,
             ).draw(canvas);
         }
 
-        if (id == selected) {
-            for (const control_point of Object.values(element)) {
+        if (id === shapes.selected) {
+            for (const control_point of Object.values(shape)) {
 
             }
         }

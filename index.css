@@ -16,7 +16,7 @@ body {
     display: flex;
 }
 
-#elements {
+#shapes {
     flex: 0.7;
 
     background-color: gray;
@@ -42,7 +42,7 @@ body {
     gap: 0.5em;
 }
 
-#elements>* {
+#shapes>* {
     text-align: left;
     background-color: white;
     padding: 0.5em;
