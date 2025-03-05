@@ -99,11 +99,11 @@ class Color {
     static WHITE = Color.opaque(255, 255, 255);
 }
 class Rectangle {
-    top_left;
-    size;
-    constructor(top_left, size) {
-        this.top_left = top_left;
-        this.size = size;
+    start;
+    end;
+    constructor(start, end) {
+        this.start = start;
+        this.end = end;
     }
 }
 class RectangleGraphic {
@@ -118,10 +118,10 @@ class RectangleGraphic {
     draw(canvas) {
         canvas.fillStyle = this.fill_style.to_style();
         const rectangle = this.rectangle;
-        const top_left = rectangle.top_left;
-        const size = rectangle.size;
+        const start = rectangle.start;
+        const end = rectangle.end;
         const stroke_style = this.stroke_style;
-        canvas.rect(top_left.x, top_left.y, size.width, size.height);
+        canvas.rect(start.x, start.y, end.x - start.x, end.y - start.y);
         canvas.fill();
         if (stroke_style !== undefined) {
             const unit_line_width = canvas.lineWidth;
@@ -190,6 +190,48 @@ class LineSegmentGraphic {
         canvas.lineWidth = unit_line_width;
     }
 }
+class NumberPlane {
+    unit_size;
+    constructor(unit_size) {
+        this.unit_size = unit_size;
+    }
+}
+class NumberPlaneGraphic {
+    number_plane;
+    axis_style;
+    tick_line_style;
+    constructor(number_plane, axis_style, tick_line_style) {
+        this.number_plane = number_plane;
+        this.axis_style = axis_style;
+        this.tick_line_style = tick_line_style;
+    }
+    draw(canvas) {
+        const draw_vertical_line = (at_x, stroke_style) => {
+            new LineGraphic(new Line(new DOMPoint(at_x, 0), new DOMPoint(at_x, 1)), stroke_style).draw(canvas);
+        };
+        const draw_horizontal_line = (at_y, stroke_style) => {
+            new LineGraphic(new Line(new DOMPoint(0, at_y), new DOMPoint(1, at_y)), stroke_style).draw(canvas);
+        };
+        const tick_line_style = this.tick_line_style;
+        const ZERO = new DOMPoint(0, 0);
+        const unit_size = this.number_plane.unit_size;
+        const screen_origin = canvas.untransform_point(ZERO);
+        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size, screen_origin.y % unit_size));
+        const canvas_element = canvas.canvas;
+        const end_positions = canvas.transform_point(new DOMPoint(canvas_element.width, canvas_element.height));
+        while (start_positions.x < end_positions.x) {
+            draw_vertical_line(start_positions.x, tick_line_style);
+            start_positions.x += 1;
+        }
+        while (start_positions.y > end_positions.y) {
+            draw_horizontal_line(start_positions.y, tick_line_style);
+            start_positions.y -= 1;
+        }
+        const axis_style = this.axis_style;
+        draw_vertical_line(0, axis_style);
+        draw_horizontal_line(0, axis_style);
+    }
+}
 class Transform {
     matrix;
     // readonly inverse: DOMMatrix;
@@ -227,31 +269,6 @@ class Transform {
 const canvas_element = unwrap_option(document.getElementById("canvas"));
 const canvas = canvas_element.getContext("2d");
 assert(canvas !== null, "Failed to retrieve the canvas context!");
-const draw_number_plane = (canvas) => {
-    const line_color = Color.monochrome(200);
-    const draw_vertical_line = (at_x, weight = 1) => {
-        new LineGraphic(new Line(new DOMPoint(at_x, 0), new DOMPoint(at_x, 1)), { color: line_color, weight: weight }).draw(canvas);
-    };
-    const draw_horizontal_line = (at_y, weight = 1) => {
-        new LineGraphic(new Line(new DOMPoint(0, at_y), new DOMPoint(1, at_y)), { color: line_color, weight: weight }).draw(canvas);
-    };
-    const ZERO = new DOMPoint(0, 0);
-    const unit_size = canvas.average_unit_size();
-    const screen_origin = canvas.untransform_point(ZERO);
-    const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size, screen_origin.y % unit_size));
-    const canvas_element = canvas.canvas;
-    const end_positions = canvas.transform_point(new DOMPoint(canvas_element.width, canvas_element.height));
-    while (start_positions.x < end_positions.x) {
-        draw_vertical_line(start_positions.x);
-        start_positions.x += 1;
-    }
-    while (start_positions.y > end_positions.y) {
-        draw_horizontal_line(start_positions.y);
-        start_positions.y -= 1;
-    }
-    draw_vertical_line(0, 2);
-    draw_horizontal_line(0, 2);
-};
 const selected = 0;
 const elements = new Map([
     [0, new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5))]
@@ -269,13 +286,14 @@ const render = () => {
     const width = canvas_element.width;
     const height = canvas_element.height;
     canvas.resetTransform();
-    new RectangleGraphic(new Rectangle(new DOMPoint(0, 0), { width: width, height: height }), Color.WHITE, { color: Color.BLACK, weight: 1, }).draw(canvas);
+    new RectangleGraphic(new Rectangle(new DOMPoint(0, 0), new DOMPoint(width, height)), Color.WHITE, { color: Color.BLACK, weight: 1, }).draw(canvas);
     const middle_x = width / 2;
     const middle_y = height / 2;
     const unit_size = 30;
     const cartesian = Transform.translate_scale(new DOMPoint(middle_x, middle_y), unit_size, false, true);
     cartesian.draw(canvas);
-    draw_number_plane(canvas);
+    const line_color = Color.monochrome(200);
+    new NumberPlaneGraphic(new NumberPlane(30), { color: line_color, weight: 2 }, { color: line_color, weight: 1 }).draw(canvas);
     for (const [id, element] of elements.entries()) {
         if (element instanceof Line) {
             new LineSegmentGraphic(element).draw(canvas);
