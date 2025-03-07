@@ -12,21 +12,23 @@ function assert(condition: boolean, message: string): asserts condition {
 
 // #region options.ts
 
-function map_option<T, U>(option: T | undefined, mapper: (from: T) => U): U | undefined {
-    if (option === undefined) {
-        return undefined;
-    }
+type Option<T> = T | undefined | null;
 
-    return mapper(option);
+function map_option<T, U>(option: Option<T>, mapper: (from: T) => U): Option<U> {
+    return (is_some_option(option)) ? mapper(option) : option;
 }
 
-function is_some_option<T>(option: T | undefined): option is T {
-    return option !== undefined;
+function is_some_option<T>(option: Option<T>): option is T {
+    return option !== undefined && option !== null;
 }
 
-function unwrap_option<T>(option: T | undefined | null): T {
-    assert(is_some_option(option) && option !== null, "Called unwrap on a None value!");
+function unwrap_option<T>(option: Option<T>): T {
+    assert(is_some_option(option), "Called unwrap on a None value!");
     return option;
+}
+
+function unwrap_option_or_else<T>(option: Option<T>, or_else: () => T): T {
+    return (is_some_option(option)) ? option : or_else();
 }
 
 // #endregion options.ts
@@ -104,6 +106,68 @@ interface Drawable {
     draw(canvas: CanvasRenderingContext2D): void;
 }
 
+interface ToDrawable<T extends Drawable> {
+    to_drawable(stroke_style: StrokeStyle, fill_style: FillStyle): T;
+}
+
+
+
+// type StaticImplements<I extends new (...args: any[]) => any, C extends I> = InstanceType<C>;
+
+// interface EditableInstance {
+//     to_control_points(): Record<string, ControlPoint>;
+// }
+
+// interface EditableStatic<T extends EditableInstance> {
+//     new(...args: any[]): T;
+//     from_control_points(control_points: Record<string, ControlPoint>): T;
+// }
+
+// class ControlPoint implements Drawable, StaticImplements<EditableStatic<ControlPoint>, typeof ControlPoint> {
+//     constructor(
+//         readonly point: DOMPoint,
+//         readonly locked_on_axis?: "x" | "y"
+//     ) { }
+
+//     get x(): number {
+//         return this.point.x;
+//     }
+
+//     set x(value: number) {
+//         this.point.x = value;
+//     }
+
+//     get y(): number {
+//         return this.point.y;
+//     }
+
+//     set y(value: number) {
+//         this.point.y = value;
+//     }
+
+//     to_control_points(): Record<string, ControlPoint> {
+//         return {
+//             value: this
+//         };
+//     }
+
+//     static from_control_points(control_points: Record<string, ControlPoint>): ControlPoint {
+//         assert(Object.keys(control_points).length == 1, "There is more than one control point in [control_points], but you're trying to build a single control point!");
+//         return unwrap_option(control_points.value);
+//     }
+
+//     draw(canvas: CanvasRenderingContext2D): void {
+//         new EllipseGraphic(
+//             new Ellipse(this.point, 0.2, 0.2),
+//             Color.opaque(35, 116, 255) as FillStyle
+//         ).draw(canvas);
+//     }
+// }
+
+// interface Editable {
+
+// } 
+
 class Color {
     readonly red: number;
     readonly green: number;
@@ -176,38 +240,44 @@ type StrokeStyle = {
 
 type FillStyle = NewType<Color, "FillStyle">;
 
-class Rectangle {
+class Rectangle implements ToDrawable<RectangleGraphic> {
     constructor(
         readonly start: DOMPoint,
         readonly end: DOMPoint
     ) { }
+
+    to_drawable(stroke_style: StrokeStyle, fill_style: FillStyle): RectangleGraphic {
+        return new RectangleGraphic(
+            this,
+            stroke_style,
+            fill_style
+        );
+    }
 }
 
 class RectangleGraphic implements Drawable {
-    readonly fill_style: FillStyle;
-
     constructor(
         readonly rectangle: Rectangle,
-        fill_color?: FillStyle,
-        readonly stroke_style?: StrokeStyle
+        readonly stroke_style?: StrokeStyle,
+        readonly fill_style?: FillStyle
     ) {
-        this.fill_style = fill_color ?? Color.WHITE as FillStyle;
     }
 
     draw(canvas: CanvasRenderingContext2D): void {
-        canvas.fillStyle = this.fill_style.to_style();
-
         const rectangle = this.rectangle;
         const start = rectangle.start;
         const end = rectangle.end;
 
-        const stroke_style = this.stroke_style;
-
+        canvas.beginPath();
         canvas.rect(start.x, start.y, end.x - start.x, end.y - start.y);
+        canvas.closePath();
 
-        canvas.fill();
+        map_option(this.fill_style, (fill_style) => {
+            canvas.fillStyle = fill_style.to_style();
+            canvas.fill();
+        });
 
-        if (stroke_style !== undefined) {
+        map_option(this.stroke_style, (stroke_style) => {
             const unit_line_width = canvas.lineWidth;
 
             canvas.lineWidth = stroke_style.weight * unit_line_width;
@@ -216,14 +286,21 @@ class RectangleGraphic implements Drawable {
             canvas.stroke();
 
             canvas.lineWidth = unit_line_width;
-        }
+        });
     }
+}
+
+class Line {
+    constructor(
+        readonly start: DOMPoint,
+        readonly end: DOMPoint
+    ) { }
 }
 
 class LineGraphic implements Drawable {
     constructor(
         readonly line: Line,
-        readonly stroke_style?: StrokeStyle
+        readonly stroke_style: StrokeStyle
     ) {
     }
 
@@ -265,44 +342,33 @@ class LineGraphic implements Drawable {
     }
 }
 
-class Line {
-    constructor(
-        readonly start: DOMPoint,
-        readonly end: DOMPoint
-    ) { }
-}
-
 class LineSegmentGraphic implements Drawable {
-    readonly stroke_style: StrokeStyle;
 
     constructor(
         readonly line: Line,
-        stroke_style?: StrokeStyle
+        readonly stroke_style?: StrokeStyle
     ) {
-        this.stroke_style = stroke_style ?? { color: Color.BLACK, weight: 1 };
     }
 
     draw(canvas: CanvasRenderingContext2D): void {
-        const stroke_style = this.stroke_style;
-
-        canvas.beginPath();
-
         const line = this.line;
-
         const start = line.start;
         const end = line.end;
 
+        canvas.beginPath();
         canvas.moveTo(start.x, start.y);
         canvas.lineTo(end.x, end.y);
+        canvas.closePath();
 
-        const unit_line_width = canvas.lineWidth;
+        map_option(this.stroke_style, (stroke_style) => {
+            const unit_line_width = canvas.lineWidth;
 
-        canvas.lineWidth = stroke_style.weight * unit_line_width;
-        canvas.strokeStyle = stroke_style.color.to_style();
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
+            canvas.strokeStyle = stroke_style.color.to_style();
 
-        canvas.stroke();
-
-        canvas.lineWidth = unit_line_width;
+            canvas.stroke();
+            canvas.lineWidth = unit_line_width;
+        });
     }
 }
 
@@ -315,31 +381,29 @@ class Ellipse {
 }
 
 class EllipseGraphic implements Drawable {
-    readonly fill_style: FillStyle;
-
     constructor(
         readonly ellipse: Ellipse,
-        fill_color?: FillStyle,
-        readonly stroke_style?: StrokeStyle
+        readonly stroke_style?: StrokeStyle,
+        readonly fill_style?: FillStyle
     ) {
-        this.fill_style = fill_color ?? Color.WHITE as FillStyle;
     }
 
     draw(canvas: CanvasRenderingContext2D): void {
-        canvas.fillStyle = this.fill_style.to_style();
-
         const ellipse = this.ellipse;
         const center = ellipse.center;
         const horizontal_radius = ellipse.horizontal_radius;
         const vertical_radius = ellipse.vertical_radius;
 
-        const stroke_style = this.stroke_style;
-
+        canvas.beginPath();
         canvas.ellipse(center.x, center.y, horizontal_radius, vertical_radius, 0, 0, 2 * Math.PI);
+        canvas.closePath();
 
-        canvas.fill();
+        map_option(this.fill_style, (fill_style) => {
+            canvas.fillStyle = fill_style.to_style();
+            canvas.fill();
+        });
 
-        if (stroke_style !== undefined) {
+        map_option(this.stroke_style, (stroke_style) => {
             const unit_line_width = canvas.lineWidth;
 
             canvas.lineWidth = stroke_style.weight * unit_line_width;
@@ -348,7 +412,7 @@ class EllipseGraphic implements Drawable {
             canvas.stroke();
 
             canvas.lineWidth = unit_line_width;
-        }
+        });
     }
 }
 
@@ -410,12 +474,9 @@ type AxisTransform = {
 };
 
 class Transform implements Drawable {
-    // readonly inverse: DOMMatrix;
-
     constructor(
-        readonly matrix: DOMMatrix,
+        readonly matrix?: DOMMatrix,
     ) {
-        // this.inverse = matrix.inverse();
     }
 
     static from_values(
@@ -457,29 +518,29 @@ class Transform implements Drawable {
     }
 
     draw(canvas: CanvasRenderingContext2D) {
-        const matrix = this.matrix;
-
-        canvas.transform(
-            matrix.a,
-            matrix.b,
-            matrix.c,
-            matrix.d,
-            matrix.e,
-            matrix.f,
+        unwrap_option_or_else(
+            map_option(
+                this.matrix,
+                (matrix) => {
+                    canvas.transform(
+                        matrix.a,
+                        matrix.b,
+                        matrix.c,
+                        matrix.d,
+                        matrix.e,
+                        matrix.f,
+                    );
+                }
+            ),
+            () => {
+                canvas.resetTransform();
+            }
         );
 
         const unit_size = canvas.unit_size();
 
         canvas.lineWidth = 1 / ((unit_size.width + unit_size.height) / 2);
     }
-
-    // transform(point: DOMPoint): DOMPoint {
-    //     return point.matrixTransform(this.inverse);
-    // }
-
-    // revert(point: DOMPoint): DOMPoint {
-    //     return point.matrixTransform(this.matrix);
-    // }
 }
 
 // #endregion draw.ts
@@ -487,28 +548,32 @@ class Transform implements Drawable {
 const canvas_element = unwrap_option(document.getElementById("canvas")) as HTMLCanvasElement;
 const canvas = canvas_element.getContext("2d");
 
-assert(canvas !== null, "Failed to retrieve the canvas context!");
+assert(is_some_option(canvas), "Failed to retrieve the canvas context!");
 
-type Shape = Line;
+type Shape = Line | Ellipse;
 
-class Shapes {
-    readonly shapes: Map<number, Shape>
+// class Shapes {
+//     readonly shapes: Map<number, ToDrawable<Drawable>>
 
-    constructor(
-        shapes?: Map<number, Shape>,
-        public selected?: number
-    ) {
-        this.shapes = shapes ?? new Map();
-    }
+//     constructor(
+//         shapes?: Map<number, Drawable>,
+//         public selected?: number
+//     ) {
+//         this.shapes = shapes ?? new Map();
+//     }
 
-    entries(): IterableIterator<[number, Shape]> {
-        return this.shapes.entries();
-    }
-}
+//     entries(): IterableIterator<[number, Drawable]> {
+//         return this.shapes.entries();
+//     }
 
-const shapes = new Shapes(new Map([
-    [0, new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5))]
-]));
+//     drawable()
+// }
+
+const shapes = new Shapes(
+    new Map([
+        [0, new ControlLine(new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5)))]
+    ])
+);
 
 canvas_element.addEventListener("mousedown", (event) => {
     // const area = canvas_element.getBoundingClientRect();
@@ -525,12 +590,16 @@ const render = () => {
     const width = canvas_element.width;
     const height = canvas_element.height;
 
+    const identity_transform = new Transform();
+
+    identity_transform.draw(canvas);
+
     canvas.resetTransform();
 
     new RectangleGraphic(
         new Rectangle(new DOMPoint(0, 0), new DOMPoint(width, height)),
-        Color.WHITE as FillStyle,
-        { color: Color.BLACK, weight: 1, }
+        { color: Color.BLACK, weight: 1, },
+        Color.WHITE as FillStyle
     ).draw(canvas);
 
     const middle_x = width / 2;
@@ -554,25 +623,27 @@ const render = () => {
         { color: line_color, weight: 1 }
     ).draw(canvas);
 
-    for (const [id, shape] of shapes.entries()) {
-        if (shape instanceof Line) {
+    const fill_style = 
+
+    for (const [id, control_shape] of shapes.entries()) {
+        if (control_shape instanceof ControlLine) {
             new LineSegmentGraphic(
-                shape,
+                control_shape.line,
             ).draw(canvas);
         }
 
         if (id === shapes.selected) {
-            for (const control_point of Object.values(shape)) {
+            for (const control_point of Object.values(control_shape)) {
 
             }
         }
     }
 };
 
-let render_request: number | undefined = undefined;
+let render_request: Option<number> = undefined;
 
 const request_render = () => {
-    if (render_request !== undefined) {
+    if (is_some_option(render_request)) {
         return;
     }
 
@@ -586,10 +657,10 @@ const request_render = () => {
 
 const resize_canvas = (entries: ResizeObserverEntry[]) => {
     const [canvas_resize] = entries;
-    assert(canvas_resize !== undefined, "The resize observer might not be targeted on the canvas!");
+    assert(is_some_option(canvas_resize), "The resize observer might not be targeted on the canvas!");
 
     const screen_size = canvas_resize.contentBoxSize[0];
-    assert(screen_size !== undefined, "The resize observer couldn't get a size!");
+    assert(is_some_option(screen_size), "The resize observer couldn't get a size!");
 
     canvas_element.width = screen_size.inlineSize;
     canvas_element.height = screen_size.blockSize;
