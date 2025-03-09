@@ -185,6 +185,37 @@ class UnaryOperator {
         return this.value.variables();
     }
 }
+class RestrictTo {
+    value;
+    range;
+    constructor(value, range) {
+        this.value = value;
+        this.range = range;
+    }
+    variables() {
+        return this.value.variables();
+    }
+    simplify(substitutions) {
+        const value = this.value.simplify(substitutions);
+        const simplifications = [];
+        for (const simplification of value) {
+            simplifications.push((() => {
+                if (simplification instanceof Value) {
+                    const value = simplification.value;
+                    if (value === undefined) {
+                        return Value.UNDEFINED;
+                    }
+                    return new Value(this.range.contains(value) ? value : undefined);
+                }
+                return new RestrictTo(simplification, this.range);
+            })());
+        }
+        return simplifications;
+    }
+    to_string() {
+        return `(+sqrt(${this.value.to_string()}))`;
+    }
+}
 class PrincipalSqrt extends UnaryOperator {
     simplify(substitutions) {
         const value = this.value.simplify(substitutions);
@@ -515,7 +546,9 @@ class MathFunctionGraphic {
                     }
                     points.length = 0;
                 }
-                points.push((x_based) ? new DOMPoint(variable, output) : new DOMPoint(output, variable));
+                else {
+                    points.push((x_based) ? new DOMPoint(variable, output) : new DOMPoint(output, variable));
+                }
                 variable += this.step;
             }
             new PathGraphic(new Path(points), stroke_style).draw(canvas);
@@ -560,6 +593,7 @@ class ParabolaGraphic {
     draw(canvas) {
         const parabola = this.parabola;
         const vertex = parabola.vertex;
+        const point = parabola.point;
         const dependent_axis = parabola.dependent_axis;
         const a = parabola.a();
         const vertical = dependent_axis === "y";
@@ -568,7 +602,8 @@ class ParabolaGraphic {
         const [variable, squared_vertex, added_vertex] = (vertical) ?
             [Variable.X, vertex_x_value, vertex_y_value] :
             [Variable.Y, vertex_y_value, vertex_x_value];
-        const equation = new Add(new Multiply(new Value(a), Multiply.square(new Subtract(variable, squared_vertex))), added_vertex);
+        const clamper = (vertical) ? new Extent(vertex.y, point.y) : new Extent(vertex.x, point.x);
+        const equation = new RestrictTo(new Add(new Multiply(new Value(a), Multiply.square(new Subtract(variable, squared_vertex))), added_vertex), clamper);
         new MathFunctionGraphic(equation, this.stroke_style, this.step).draw(canvas);
     }
 }
@@ -864,6 +899,17 @@ class DesmosDraw {
         cartesian_transform.draw(canvas);
         const line_color = Color.monochrome(200);
         new NumberPlaneGraphic({ color: line_color, weight: 2 }, { color: line_color, weight: 1 }).draw(canvas);
+        // new ParabolaGraphic(
+        //     new Parabola(
+        //         "y",
+        //         new DOMPoint(0, 0),
+        //         new DOMPoint(5, 5)
+        //     ),
+        //     {
+        //         color: Color.BLACK,
+        //         weight: 1
+        //     }
+        // ).draw(canvas);
         map_option(this.selected_controls, (selected_controls) => {
             for (const control_point of Object.values(selected_controls)) {
                 control_point.to_drawable().draw(canvas);
@@ -901,7 +947,6 @@ function loop(timestamp) {
                 is_down: is_down
             }
         });
-        // console.log("a");
         desmos_draw.draw(canvas);
     }
     requestAnimationFrame(loop);
@@ -911,7 +956,7 @@ const shapes = unwrap_option(document.getElementById("shapes"));
 [
     ["line_tool", () => new DesmosLineSegment(new Line(new DOMPoint(-1, -1), new DOMPoint(1, 1)))],
     ["ellipse_tool", () => new DesmosEllipse(new Ellipse(POINT_ZERO, 1, 1))],
-    ["parabola_tool", () => new DesmosParabola(new Parabola("y", POINT_ZERO, new DOMPoint(1, 1)))],
+    ["parabola_tool", () => new DesmosParabola(new Parabola("y", POINT_ZERO, new DOMPoint(2, 2)))],
     ["hyperbola_tool", () => undefined]
 ].map(([element_name, builder]) => unwrap_option(document.getElementById(element_name))
     .addEventListener("click", () => {
