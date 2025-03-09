@@ -1,3 +1,9 @@
+// #region type_help.ts
+
+type NewType<T, Brand> = T & { __brand: Brand };
+
+// #endregion type_help.ts
+
 // #region asserts.ts
 
 class AssertionError extends Error { }
@@ -27,10 +33,6 @@ function unwrap_option<T>(option: Option<T>): T {
     return option;
 }
 
-function unwrap_option_or_else<T>(option: Option<T>, or_else: () => T): T {
-    return (is_some_option(option)) ? option : or_else();
-}
-
 // #endregion options.ts
 
 // #region numbers.ts
@@ -57,6 +59,16 @@ class Extent {
         return value >= this.min && value <= this.max;
     }
 
+    clamp(value: number): number {
+        const max = this.max;
+        const min = this.min;
+
+        if (value > max) return max;
+        if (value < min) return min;
+
+        return value;
+    }
+
     percentage(value: number): Percentage {
         const min = this.min;
 
@@ -73,22 +85,224 @@ function modulo(dividend: number, divisor: number): number {
 
 // #endregion numbers.ts
 
+// #region expressions.ts
+
+interface Expression {
+    variables(): Set<string>;
+    simplify(substitutions: Record<string, Expression>): Expression[];
+    to_string(): string;
+}
+
+class Variable implements Expression {
+    constructor(
+        readonly name: string
+    ) { }
+
+    variables(): Set<string> {
+        return new Set([this.name]);
+    }
+
+    simplify(substitutions: Record<string, Expression>): Expression[] {
+        return map_option(substitutions[this.name], (substitution) => [substitution]) ?? [new Variable(this.name)];
+    }
+
+    to_string(): string {
+        return this.name;
+    }
+}
+
+class Value implements Expression {
+    constructor(
+        readonly value: number | undefined
+    ) { }
+
+    variables(): Set<string> {
+        return new Set();
+    }
+
+    simplify(_: Record<string, Expression>): Expression[] {
+        return [this];
+    }
+
+    to_string(): string {
+        return `${this.value}`;
+    }
+}
+
+abstract class BinaryOperator implements Expression {
+    constructor(
+        readonly a: Expression,
+        readonly b: Expression
+    ) { }
+
+    variables(): Set<string> {
+        return new Set([
+            ...this.a.variables(),
+            ...this.b.variables()
+        ]);
+    }
+
+    abstract operate(a: Expression, b: Expression): Expression[];
+
+    simplify(substitutions: Record<string, Expression>): Expression[] {
+        const a = this.a.simplify(substitutions);
+        const b = this.b.simplify(substitutions);
+
+        const simplifications = [];
+
+        for (const a_simplification of a) {
+            for (const b_simplification of b) {
+                for (const result of this.operate(a_simplification, b_simplification)) {
+                    simplifications.push(result);
+                }
+            }
+        }
+
+        return simplifications;
+    }
+
+    abstract to_string(): string;
+}
+
+class Add extends BinaryOperator {
+    override operate(a: Expression, b: Expression): Expression[] {
+        if (a instanceof Value && b instanceof Value) {
+            const a_value = a.value;
+            const b_value = b.value;
+
+            if (a_value === undefined || b_value === undefined) {
+                return [new Value(undefined)];
+            }
+
+            return [new Value(a_value + b_value)];
+        }
+
+        return [new Add(a, b)];
+    }
+
+    override to_string(): string {
+        return `(${this.a.to_string()} + ${this.b.to_string()})`;
+    }
+}
+class Subtract extends Add {
+    constructor(
+        a: Expression,
+        b: Expression
+    ) {
+        super(a, new Multiply(b, new Value(-1)));
+    }
+}
+
+class Divide extends BinaryOperator {
+    override operate(a: Expression, b: Expression): Expression[] {
+        if (a instanceof Value && b instanceof Value) {
+            const a_value = a.value;
+            const b_value = b.value;
+
+            if (a_value === undefined || b_value === undefined || b_value === 0) {
+                return [new Value(undefined)];
+            }
+
+            return [new Value(a_value / b_value)];
+        }
+
+        return [new Divide(a, b)];
+    }
+
+    override to_string(): string {
+        return `(${this.a.to_string()} / ${this.b.to_string()})`;
+    }
+}
+
+class Multiply extends Divide {
+    constructor(
+        a: Expression,
+        b: Expression
+    ) {
+        super(a, new Divide(new Value(1), b));
+    }
+}
+
+abstract class UnaryOperator implements Expression {
+    constructor(
+        readonly value: Expression
+    ) { }
+
+    variables(): Set<string> {
+        return this.value.variables();
+    }
+
+    abstract operate(value: Expression): Expression[];
+
+    simplify(substitutions: Record<string, Expression>): Expression[] {
+        const value = this.value.simplify(substitutions);
+
+        const simplifications = [];
+
+        for (const simplification of value) {
+            for (const result of this.operate(simplification)) {
+                simplifications.push(result);
+            }
+        }
+
+        return simplifications;
+    }
+
+    abstract to_string(): string;
+}
+
+class PrincipalSqrt extends UnaryOperator {
+    override operate(expression: Expression): Expression[] {
+        if (expression instanceof Value) {
+            const value = expression.value;
+
+            return [new Value((value === undefined) ? undefined : Math.sqrt(value))];
+        }
+
+        return [new PrincipalSqrt(expression)];
+    }
+
+    to_string(): string {
+        return `(+sqrt(${this.value.to_string()}))`;
+    }
+}
+
+class Sqrt extends PrincipalSqrt {
+    override operate(value: Expression): Expression[] {
+        return super.operate(value).flatMap(
+            (operated) => [
+                operated,
+                ...new Multiply(operated, new Value(-1)).simplify({})
+            ]
+        );
+    }
+
+    override to_string(): string {
+        return `(sqrt(${this.value.to_string()}))`;
+    }
+}
+
+// #endregion expressions.ts
+
 // #region draw.ts
 
-type NewType<T, Brand> = T & { __brand: Brand };
+type ScreenSpace = NewType<DOMPoint, "ScreenSpace">;
+type CoordinateSpace = NewType<DOMPoint, "CoordinateSpace">;
 
 interface CanvasRenderingContext2D {
-    transform_point(untransformed_point: DOMPoint): DOMPoint;
-    untransform_point(transformed_point: DOMPoint): DOMPoint;
+    to_coordinate_space(point: ScreenSpace): CoordinateSpace;
+    to_screen_space(point: CoordinateSpace): ScreenSpace;
     unit_size(): Size;
 }
 
-CanvasRenderingContext2D.prototype.transform_point = function (untransformed_point: DOMPoint): DOMPoint {
-    return untransformed_point.matrixTransform(this.getTransform().inverse());
+CanvasRenderingContext2D.prototype.to_coordinate_space = function (point: ScreenSpace): CoordinateSpace {
+    // return point.matrixTransform(this.getTransform().inverse()) as CoordinateSpace;
 }
 
-CanvasRenderingContext2D.prototype.untransform_point = function (transformed_point: DOMPoint): DOMPoint {
-    return transformed_point.matrixTransform(this.getTransform());
+CanvasRenderingContext2D.prototype.to_screen_space = function (point: CoordinateSpace): ScreenSpace {
+    return
+
+    //return point.matrixTransform(this.getTransform()) as ScreenSpace;
 }
 
 CanvasRenderingContext2D.prototype.unit_size = function (): Size {
@@ -102,71 +316,20 @@ CanvasRenderingContext2D.prototype.unit_size = function (): Size {
     return { width: Math.sqrt((x_scale * x_scale) + (y_skew * y_skew)), height: Math.sqrt((y_scale * y_scale) + (x_skew * x_skew)) };
 }
 
-interface Drawable {
-    draw(canvas: CanvasRenderingContext2D): void;
+interface DOMPoint {
+    squared_distance(other: DOMPoint): number;
+    distance(other: DOMPoint): number;
 }
 
-interface ToDrawable<T extends Drawable> {
-    to_drawable(stroke_style: StrokeStyle, fill_style: FillStyle): T;
+DOMPoint.prototype.squared_distance = function (other: DOMPoint) {
+    const x_delta = this.x - other.x;
+    const y_delta = this.y - other.y;
+    return (x_delta * x_delta) + (y_delta * y_delta);
 }
 
-
-
-// type StaticImplements<I extends new (...args: any[]) => any, C extends I> = InstanceType<C>;
-
-// interface EditableInstance {
-//     to_control_points(): Record<string, ControlPoint>;
-// }
-
-// interface EditableStatic<T extends EditableInstance> {
-//     new(...args: any[]): T;
-//     from_control_points(control_points: Record<string, ControlPoint>): T;
-// }
-
-// class ControlPoint implements Drawable, StaticImplements<EditableStatic<ControlPoint>, typeof ControlPoint> {
-//     constructor(
-//         readonly point: DOMPoint,
-//         readonly locked_on_axis?: "x" | "y"
-//     ) { }
-
-//     get x(): number {
-//         return this.point.x;
-//     }
-
-//     set x(value: number) {
-//         this.point.x = value;
-//     }
-
-//     get y(): number {
-//         return this.point.y;
-//     }
-
-//     set y(value: number) {
-//         this.point.y = value;
-//     }
-
-//     to_control_points(): Record<string, ControlPoint> {
-//         return {
-//             value: this
-//         };
-//     }
-
-//     static from_control_points(control_points: Record<string, ControlPoint>): ControlPoint {
-//         assert(Object.keys(control_points).length == 1, "There is more than one control point in [control_points], but you're trying to build a single control point!");
-//         return unwrap_option(control_points.value);
-//     }
-
-//     draw(canvas: CanvasRenderingContext2D): void {
-//         new EllipseGraphic(
-//             new Ellipse(this.point, 0.2, 0.2),
-//             Color.opaque(35, 116, 255) as FillStyle
-//         ).draw(canvas);
-//     }
-// }
-
-// interface Editable {
-
-// } 
+DOMPoint.prototype.distance = function (other: DOMPoint) {
+    return Math.sqrt(this.squared_distance(other));
+}
 
 class Color {
     readonly red: number;
@@ -240,22 +403,18 @@ type StrokeStyle = {
 
 type FillStyle = NewType<Color, "FillStyle">;
 
-class Rectangle implements ToDrawable<RectangleGraphic> {
-    constructor(
-        readonly start: DOMPoint,
-        readonly end: DOMPoint
-    ) { }
-
-    to_drawable(stroke_style: StrokeStyle, fill_style: FillStyle): RectangleGraphic {
-        return new RectangleGraphic(
-            this,
-            stroke_style,
-            fill_style
-        );
-    }
+interface Drawable {
+    draw(canvas: CanvasRenderingContext2D): void;
 }
 
-class RectangleGraphic implements Drawable {
+class Rectangle {
+    constructor(
+        public start: DOMPoint,
+        public end: DOMPoint
+    ) { }
+}
+
+class RectangleGraphic implements Drawable /* , DrawableShape */ {
     constructor(
         readonly rectangle: Rectangle,
         readonly stroke_style?: StrokeStyle,
@@ -292,15 +451,72 @@ class RectangleGraphic implements Drawable {
 
 class Line {
     constructor(
-        readonly start: DOMPoint,
-        readonly end: DOMPoint
+        public start: DOMPoint,
+        public end: DOMPoint
     ) { }
 }
 
-class LineGraphic implements Drawable {
+class Path {
+    constructor(
+        readonly points: DOMPoint[]
+    ) { }
+}
+
+class PathGraphic implements Drawable {
+    constructor(
+        readonly path: Path,
+        readonly stroke_style?: StrokeStyle
+    ) { }
+
+    draw(canvas: CanvasRenderingContext2D): void {
+        const path = this.path;
+        const points = [...path.points];
+        const start = points.shift();
+
+        if (is_some_option(start)) {
+            canvas.beginPath();
+
+            canvas.moveTo(start.x, start.y);
+
+            for (const point of points) {
+                canvas.lineTo(point.x, point.y);
+            }
+        }
+
+
+        map_option(this.stroke_style, (stroke_style) => {
+            const unit_line_width = canvas.lineWidth;
+
+            canvas.lineWidth = stroke_style.weight * unit_line_width;
+            canvas.strokeStyle = stroke_style.color.to_style();
+
+            canvas.stroke();
+            canvas.lineWidth = unit_line_width;
+        });
+    }
+}
+
+class LineSegmentGraphic implements Drawable /* , DrawableShape */ {
     constructor(
         readonly line: Line,
-        readonly stroke_style: StrokeStyle
+        readonly stroke_style?: StrokeStyle
+    ) {
+    }
+
+    draw(canvas: CanvasRenderingContext2D): void {
+        const line = this.line;
+
+        new PathGraphic(
+            new Path([line.start, line.end]),
+            this.stroke_style
+        ).draw(canvas);
+    }
+}
+
+class LineGraphic implements Drawable /* , DrawableShape */ {
+    constructor(
+        readonly line: Line,
+        readonly stroke_style?: StrokeStyle
     ) {
     }
 
@@ -312,8 +528,8 @@ class LineGraphic implements Drawable {
         const x_delta = end.x - start.x;
 
         const canvas_element = canvas.canvas;
-        const bottom_right = canvas.transform_point(new DOMPoint(canvas_element.width, canvas_element.height));
-        const top_left = canvas.transform_point(new DOMPoint(0, 0));
+        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0) as ScreenSpace);
+        const bottom_right = canvas.to_coordinate_space(new DOMPoint(canvas_element.width, canvas_element.height) as ScreenSpace);
 
         const is_90 = x_delta <= 0.001;
 
@@ -342,45 +558,15 @@ class LineGraphic implements Drawable {
     }
 }
 
-class LineSegmentGraphic implements Drawable {
-
-    constructor(
-        readonly line: Line,
-        readonly stroke_style?: StrokeStyle
-    ) {
-    }
-
-    draw(canvas: CanvasRenderingContext2D): void {
-        const line = this.line;
-        const start = line.start;
-        const end = line.end;
-
-        canvas.beginPath();
-        canvas.moveTo(start.x, start.y);
-        canvas.lineTo(end.x, end.y);
-        canvas.closePath();
-
-        map_option(this.stroke_style, (stroke_style) => {
-            const unit_line_width = canvas.lineWidth;
-
-            canvas.lineWidth = stroke_style.weight * unit_line_width;
-            canvas.strokeStyle = stroke_style.color.to_style();
-
-            canvas.stroke();
-            canvas.lineWidth = unit_line_width;
-        });
-    }
-}
-
 class Ellipse {
     constructor(
-        readonly center: DOMPoint,
-        readonly horizontal_radius: number,
-        readonly vertical_radius: number
+        public center: DOMPoint,
+        public horizontal_radius: number,
+        public vertical_radius: number
     ) { }
 }
 
-class EllipseGraphic implements Drawable {
+class EllipseGraphic implements Drawable /* , DrawableShape */ {
     constructor(
         readonly ellipse: Ellipse,
         readonly stroke_style?: StrokeStyle,
@@ -395,7 +581,7 @@ class EllipseGraphic implements Drawable {
         const vertical_radius = ellipse.vertical_radius;
 
         canvas.beginPath();
-        canvas.ellipse(center.x, center.y, horizontal_radius, vertical_radius, 0, 0, 2 * Math.PI);
+        canvas.ellipse(center.x, center.y, Math.abs(horizontal_radius), Math.abs(vertical_radius), 0, 0, 2 * Math.PI);
         canvas.closePath();
 
         map_option(this.fill_style, (fill_style) => {
@@ -416,22 +602,131 @@ class EllipseGraphic implements Drawable {
     }
 }
 
-class NumberPlaneGraphic implements Drawable {
+class MathFunctionGraphic implements Drawable {
+    readonly function_variable: "x" | "y";
+    readonly step: number;
+    readonly math_functions: Expression[];
+
     constructor(
-        readonly axis_style: StrokeStyle,
-        readonly tick_line_style: StrokeStyle
+        math_function: Expression,
+        readonly stroke_style?: StrokeStyle,
+        step?: number
     ) {
+        const variables = math_function.variables();
+
+        assert(variables.size === 1 && (variables.has("x") || variables.has("y")), "You can't draw a function that doesn't have either an x or a y variable!");
+
+        this.function_variable = unwrap_option(variables.values().next().value) as "x" | "y";
+        this.math_functions = math_function.simplify({});
+
+        this.step = step ?? 0.0003;
     }
 
     draw(canvas: CanvasRenderingContext2D): void {
-        const draw_vertical_line = (at_x: number, stroke_style: StrokeStyle) => {
+        const canvas_element = canvas.canvas;
+        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0) as ScreenSpace);
+        const bottom_right = canvas.to_coordinate_space(new DOMPoint(canvas_element.width, canvas_element.height) as ScreenSpace);
+
+        const function_variable = this.function_variable;
+        const x_based = function_variable === "x";
+
+        const [start, end] = (x_based) ? [top_left.x, bottom_right.x] : [bottom_right.y, top_left.y];
+
+        for (const math_function of this.math_functions) {
+            const points = [];
+
+            let variable = start;
+
+            const stroke_style = this.stroke_style;
+
+            while (variable <= end) {
+                const function_simplification = math_function.simplify({
+                    [function_variable]: new Value(variable)
+                });
+
+
+                assert(function_simplification.length === 1, "The math function had multiple outputs!?");
+
+                const [function_output] = function_simplification;
+
+                assert(function_output instanceof Value, "The math function had an output that wasn't a value!");
+
+                const output = function_output.value;
+
+                if (!is_some_option(output)) {
+                    const point_count = points.length;
+
+                    if (point_count >= 1) {
+                        new PathGraphic(
+                            new Path(points),
+                            stroke_style
+                        ).draw(canvas);
+                    }
+
+                    points.length = 0;
+                }
+
+                points.push(
+                    (x_based) ? new DOMPoint(variable, output) : new DOMPoint(output, variable)
+                );
+
+                variable += this.step;
+            }
+
+            new PathGraphic(
+                new Path(points),
+                stroke_style
+            ).draw(canvas);
+        }
+
+    }
+}
+
+// class Parabola {
+//     readonly math_function: Expression;
+
+//     constructor(
+//         axis: "x" | "y",
+//         vertex: DOMPoint,
+//     )
+// }
+
+class NumberPlaneGraphic implements Drawable {
+    readonly unit_size: Size;
+    readonly origin: DOMPoint;
+
+    constructor(
+        readonly axis_style?: StrokeStyle,
+        readonly tick_line_style?: StrokeStyle,
+        unit_size?: Size,
+        origin?: DOMPoint
+    ) {
+        this.origin = origin ?? new DOMPoint(0, 0);
+        this.unit_size = unit_size ?? { width: 1, height: 1 };
+    }
+
+    draw(canvas: CanvasRenderingContext2D): void {
+        const origin = this.origin;
+        const unit_size = this.unit_size;
+
+        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0) as ScreenSpace);
+        const screen_unit_size = canvas.to_screen_space(new DOMPoint(top_left.x + unit_size.width, top_left.y + unit_size.height) as CoordinateSpace);
+
+        const screen_origin = canvas.to_screen_space(origin as CoordinateSpace);
+
+        const canvas_element = canvas.canvas;
+
+        const start_positions = canvas.to_coordinate_space(new DOMPoint(screen_origin.x % screen_unit_size.x, screen_origin.y % screen_unit_size.y) as ScreenSpace);
+        const end_positions = canvas.to_coordinate_space(new DOMPoint(canvas_element.width, canvas_element.height) as ScreenSpace);
+
+        const draw_vertical_line = (at_x: number, stroke_style?: StrokeStyle) => {
             new LineGraphic(
                 new Line(new DOMPoint(at_x, 0), new DOMPoint(at_x, 1)),
                 stroke_style
             ).draw(canvas);
         };
 
-        const draw_horizontal_line = (at_y: number, stroke_style: StrokeStyle) => {
+        const draw_horizontal_line = (at_y: number, stroke_style?: StrokeStyle) => {
             new LineGraphic(
                 new Line(new DOMPoint(0, at_y), new DOMPoint(1, at_y)),
                 stroke_style
@@ -439,17 +734,6 @@ class NumberPlaneGraphic implements Drawable {
         }
 
         const tick_line_style = this.tick_line_style;
-
-        const ZERO = new DOMPoint(0, 0);
-
-        const unit_size = canvas.unit_size();
-        const screen_origin = canvas.untransform_point(ZERO);
-
-        const start_positions = canvas.transform_point(new DOMPoint(screen_origin.x % unit_size.width, screen_origin.y % unit_size.height));
-
-        const canvas_element = canvas.canvas;
-
-        const end_positions = canvas.transform_point(new DOMPoint(canvas_element.width, canvas_element.height));
 
         while (start_positions.x < end_positions.x) {
             draw_vertical_line(start_positions.x, tick_line_style);
@@ -462,9 +746,8 @@ class NumberPlaneGraphic implements Drawable {
         }
 
         const axis_style = this.axis_style;
-
-        draw_vertical_line(0, axis_style);
-        draw_horizontal_line(0, axis_style);
+        draw_vertical_line(origin.x, axis_style);
+        draw_horizontal_line(origin.y, axis_style);
     }
 }
 
@@ -475,7 +758,7 @@ type AxisTransform = {
 
 class Transform implements Drawable {
     constructor(
-        readonly matrix?: DOMMatrix,
+        public matrix?: DOMMatrix,
     ) {
     }
 
@@ -518,24 +801,20 @@ class Transform implements Drawable {
     }
 
     draw(canvas: CanvasRenderingContext2D) {
-        unwrap_option_or_else(
-            map_option(
-                this.matrix,
-                (matrix) => {
-                    canvas.transform(
-                        matrix.a,
-                        matrix.b,
-                        matrix.c,
-                        matrix.d,
-                        matrix.e,
-                        matrix.f,
-                    );
-                }
-            ),
-            () => {
-                canvas.resetTransform();
-            }
-        );
+        const matrix = this.matrix;
+
+        if (is_some_option(matrix)) {
+            canvas.transform(
+                matrix.a,
+                matrix.b,
+                matrix.c,
+                matrix.d,
+                matrix.e,
+                matrix.f,
+            );
+        } else {
+            canvas.resetTransform();
+        }
 
         const unit_size = canvas.unit_size();
 
@@ -545,117 +824,458 @@ class Transform implements Drawable {
 
 // #endregion draw.ts
 
-const canvas_element = unwrap_option(document.getElementById("canvas")) as HTMLCanvasElement;
-const canvas = canvas_element.getContext("2d");
+// #region elements.ts
 
-assert(is_some_option(canvas), "Failed to retrieve the canvas context!");
+// #region control.ts
 
-type Shape = Line | Ellipse;
+abstract class Property {
+    constructor(
+    ) { }
+}
 
-// class Shapes {
-//     readonly shapes: Map<number, ToDrawable<Drawable>>
+class PointProperty extends Property {
+    constructor(
+        readonly setter: (point: DOMPoint) => void,
+        readonly getter: () => DOMPoint
+    ) { super(); }
+}
 
-//     constructor(
-//         shapes?: Map<number, Drawable>,
-//         public selected?: number
-//     ) {
-//         this.shapes = shapes ?? new Map();
-//     }
+class AxisProperty extends Property {
+    constructor(
+        readonly axis: "x" | "y",
+        readonly setter: (axis: number) => void,
+        readonly getter: () => number
+    ) { super(); }
+}
 
-//     entries(): IterableIterator<[number, Drawable]> {
-//         return this.shapes.entries();
-//     }
+// #endregion control.ts
 
-//     drawable()
-// }
+interface DrawableShape {
+    to_drawable(stroke_style?: StrokeStyle, fill_style?: FillStyle): Drawable;
+}
 
-const shapes = new Shapes(
-    new Map([
-        [0, new ControlLine(new Line(new DOMPoint(2, 2), new DOMPoint(-5, 5)))]
-    ])
-);
+interface Editable {
+    properties(): Record<string, Property>;
+}
 
-canvas_element.addEventListener("mousedown", (event) => {
-    // const area = canvas_element.getBoundingClientRect();
+interface Controllable {
+    controls(): Record<string, ControlPoint>;
+}
 
-    // const position = canvas.transform_point(
-    //     new DOMPoint(
-    //         event.clientX - area.left,
-    //         event.clientY - area.top
-    //     )
-    // );
-});
+interface DesmosShape extends DrawableShape, Editable, Controllable { }
 
-const render = () => {
-    const width = canvas_element.width;
-    const height = canvas_element.height;
+class ControlPoint implements DrawableShape {
+    static current_id: number = 0;
+    static selected: number | undefined = undefined;
 
-    const identity_transform = new Transform();
+    private id: number;
+    public radius: number;
 
-    identity_transform.draw(canvas);
+    constructor(
+        readonly point: () => DOMPoint,
+        readonly control: Property,
+        radius?: number
+    ) {
+        this.id = ControlPoint.current_id;
+        ControlPoint.current_id += 1;
 
-    canvas.resetTransform();
+        this.radius = radius ?? 0.25;
+    }
 
-    new RectangleGraphic(
-        new Rectangle(new DOMPoint(0, 0), new DOMPoint(width, height)),
-        { color: Color.BLACK, weight: 1, },
-        Color.WHITE as FillStyle
-    ).draw(canvas);
+    update(_: DOMHighResTimeStamp, input: Input) {
+        const control = this.control;
+        const mouse = input.mouse;
+        const mouse_position = mouse.position;
 
-    const middle_x = width / 2;
-    const middle_y = height / 2;
+        const point = this.point();
 
-    const unit_size = 30;
+        const id = this.id;
 
-    const cartesian = Transform.translate_scale(
-        new DOMPoint(middle_x, middle_y),
-        unit_size as Percentage,
-        false,
-        true
-    );
-
-    cartesian.draw(canvas);
-
-    const line_color = Color.monochrome(200);
-
-    new NumberPlaneGraphic(
-        { color: line_color, weight: 2 },
-        { color: line_color, weight: 1 }
-    ).draw(canvas);
-
-    const fill_style = 
-
-    for (const [id, control_shape] of shapes.entries()) {
-        if (control_shape instanceof ControlLine) {
-            new LineSegmentGraphic(
-                control_shape.line,
-            ).draw(canvas);
+        if (
+            point.distance(mouse_position) < this.radius &&
+            mouse.is_down &&
+            ControlPoint.selected === undefined
+        ) {
+            ControlPoint.selected = this.id;
         }
 
-        if (id === shapes.selected) {
-            for (const control_point of Object.values(control_shape)) {
+        if (id === ControlPoint.selected) {
+            if (control instanceof PointProperty) {
+                control.setter(mouse_position);
+            } else if (control instanceof AxisProperty) {
+                control.setter((control.axis === "x") ? mouse_position.x : mouse_position.y);
+            }
 
+            if (!mouse.is_down) {
+                ControlPoint.selected = undefined;
             }
         }
     }
-};
 
-let render_request: Option<number> = undefined;
+    to_drawable(): Drawable {
+        const radius = this.radius;
 
-const request_render = () => {
-    if (is_some_option(render_request)) {
-        return;
+        return new EllipseGraphic(
+            new Ellipse(
+                this.point(),
+                radius,
+                radius
+            ),
+            undefined,
+            Color.opaque(65, 165, 238) as FillStyle
+        );
     }
-
-    render_request = requestAnimationFrame(
-        () => {
-            render();
-            render_request = undefined;
-        }
-    );
 }
 
-const resize_canvas = (entries: ResizeObserverEntry[]) => {
+type LineProperties = {
+    start: PointProperty,
+    end: PointProperty
+};
+
+class DesmosLineSegment implements DesmosShape {
+    constructor(
+        readonly line: Line
+    ) { }
+
+    properties(): LineProperties {
+        return {
+            start: new PointProperty((point) => { this.line.start = point; }, () => this.line.start),
+            end: new PointProperty((point) => { this.line.end = point; }, () => this.line.end),
+        };
+    }
+
+    controls(): Record<string, ControlPoint> {
+        const properties = this.properties();
+
+        return {
+            start: new ControlPoint(
+                () => this.line.start,
+                properties.start
+            ),
+            end: new ControlPoint(
+                () => this.line.end,
+                properties.end
+            )
+        }
+    }
+
+    to_drawable(stroke_style?: StrokeStyle, _?: FillStyle): Drawable {
+        return new LineSegmentGraphic(
+            this.line,
+            stroke_style
+        );
+    }
+}
+
+type EllipseProperties = {
+    center: PointProperty,
+    horizontal_radius: AxisProperty,
+    vertical_radius: AxisProperty
+};
+
+class DesmosEllipse implements DesmosShape {
+    constructor(
+        readonly ellipse: Ellipse
+    ) { }
+
+    properties(): EllipseProperties {
+        return {
+            center: new PointProperty(
+                (point) => { this.ellipse.center = point; },
+                () => this.ellipse.center
+            ),
+            horizontal_radius: new AxisProperty(
+                "x",
+                (horizontal) => {
+                    const ellipse = this.ellipse;
+                    ellipse.horizontal_radius = horizontal - ellipse.center.x;
+                },
+                () => this.ellipse.horizontal_radius
+            ),
+            vertical_radius: new AxisProperty(
+                "y",
+                (vertical) => {
+                    const ellipse = this.ellipse;
+                    ellipse.vertical_radius = vertical - ellipse.center.y;
+                },
+                () => this.ellipse.vertical_radius
+            )
+        };
+    }
+
+    controls() {
+        const properties = this.properties();
+
+        return {
+            horizontal_radius: new ControlPoint(
+                () => {
+                    const ellipse = this.ellipse;
+                    const center = ellipse.center;
+
+                    return new DOMPoint(
+                        center.x + ellipse.horizontal_radius,
+                        center.y
+                    );
+                },
+                properties.horizontal_radius
+            ),
+            vertical_radius: new ControlPoint(
+                () => {
+                    const ellipse = this.ellipse;
+                    const center = ellipse.center;
+
+                    return new DOMPoint(
+                        center.x,
+                        center.y + ellipse.vertical_radius
+                    );
+                },
+                properties.vertical_radius
+            ),
+            center: new ControlPoint(
+                () => this.ellipse.center,
+                properties.center
+            )
+        };
+    }
+
+    to_drawable(stroke_style?: StrokeStyle, fill_style?: FillStyle): Drawable {
+        return new EllipseGraphic(
+            this.ellipse,
+            stroke_style,
+            fill_style
+        );
+    }
+}
+
+// #endregion elements.ts 
+
+// #region main.ts
+
+type Input = {
+    mouse: {
+        position: DOMPoint,
+        is_down: boolean
+    }
+};
+
+class DesmosDraw implements Drawable {
+    private current_id: number;
+    private selected_controls: Option<Record<string, ControlPoint>>;
+    readonly shapes: Map<number, DesmosShape>;
+
+    constructor(
+    ) {
+        this.current_id = 0;
+        this.shapes = new Map();
+    }
+
+    public add_shape(shape: DesmosShape): number {
+        const current_id = this.current_id;
+        this.current_id += 1;
+
+        this.shapes.set(current_id, shape);
+        this.select_shape(current_id);
+
+        return current_id;
+    }
+
+    public remove_shape(id: number): boolean {
+        this.selected_controls = undefined;
+        return this.shapes.delete(id);
+    }
+
+    public select_shape(id: number) {
+        this.selected_controls = map_option(this.shapes.get(id), (shape) => shape.controls());
+    }
+
+    update(delta_time: DOMHighResTimeStamp, input: Input): void {
+        map_option(
+            this.selected_controls,
+            (selected_controls) => {
+                for (const control_point of Object.values(selected_controls)) {
+                    control_point.update(delta_time, input);
+                }
+            }
+        );
+    }
+
+    draw(canvas: CanvasRenderingContext2D): void {
+        const canvas_element = canvas.canvas;
+
+        const width = canvas_element.width;
+        const height = canvas_element.height;
+
+        const identity_transform = new Transform();
+
+        identity_transform.draw(canvas);
+
+        new RectangleGraphic(
+            new Rectangle(new DOMPoint(0, 0), new DOMPoint(width, height)),
+            { color: Color.BLACK, weight: 1 },
+            Color.WHITE as FillStyle
+        ).draw(canvas);
+
+        const middle_x = width / 2;
+        const middle_y = height / 2;
+
+        const unit_size = 30;
+
+        const cartesian_transform = Transform.translate_scale(
+            new DOMPoint(middle_x, middle_y),
+            unit_size as Percentage,
+            false,
+            true
+        );
+
+        cartesian_transform.draw(canvas);
+
+        const line_color = Color.monochrome(200);
+
+        new NumberPlaneGraphic(
+            { color: line_color, weight: 2 },
+            { color: line_color, weight: 1 }
+        ).draw(canvas);
+
+        // new MathFunctionGraphic(
+        //     new Sqrt(new Subtract(new Value(2), new Multiply(new Variable("x"), new Variable("x")))),
+        //     // new Multiply(new Variable("x"), new Variable("x")),
+        //     {
+        //         color: Color.BLACK,
+        //         weight: 1
+        //     }
+        // ).draw(canvas);
+
+        map_option(
+            this.selected_controls,
+            (selected_controls) => {
+                for (const control_point of Object.values(selected_controls)) {
+                    control_point.to_drawable().draw(canvas);
+                }
+            }
+        );
+
+        for (const shape of this.shapes.values()) {
+            shape.to_drawable(
+                {
+                    color: Color.BLACK,
+                    weight: 1
+                }
+            ).draw(canvas)
+        }
+    }
+}
+
+const canvas_element = unwrap_option(document.getElementById("canvas")) as HTMLCanvasElement;
+const canvas = unwrap_option(canvas_element.getContext("2d"));
+
+const desmos_draw = new DesmosDraw();
+
+const TARGET_FPS = 60;
+const FRAME_TIME = 1000 / TARGET_FPS;
+let previous_time_ms = 0 as DOMHighResTimeStamp;
+
+let mouse_position = new DOMPoint(0, 0);
+let is_down = false;
+
+window.addEventListener("mousemove", (event) => {
+    const canvas_rect = canvas_element.getBoundingClientRect();
+
+    mouse_position = canvas.to_coordinate_space(
+        new DOMPoint(
+            event.clientX - canvas_rect.left,
+            event.clientY - canvas_rect.top
+        ) as ScreenSpace
+    );
+});
+
+window.addEventListener("mousedown", () => { is_down = true; });
+window.addEventListener("mouseup", () => { is_down = false; });
+
+function loop(timestamp: DOMHighResTimeStamp) {
+    const delta_time = timestamp - previous_time_ms;
+
+    if (delta_time >= FRAME_TIME) {
+        previous_time_ms = timestamp;
+
+        desmos_draw.update(delta_time, {
+            mouse: {
+                position: mouse_position,
+                is_down: is_down
+            }
+        });
+
+        desmos_draw.draw(canvas);
+    }
+
+
+    requestAnimationFrame(loop);
+};
+
+const shapes = unwrap_option(document.getElementById("shapes"));
+
+([
+    ["line_tool", () => new DesmosLineSegment(new Line(new DOMPoint(-1, -1), new DOMPoint(1, 1)))],
+    ["ellipse_tool", () => new DesmosEllipse(new Ellipse(new DOMPoint(0, 0), 1, 1))],
+    ["parabola_tool", () => undefined],
+    ["hyperbola_tool", () => undefined]
+] as [string, () => Option<DesmosShape>][]).map(
+    ([element_name, builder]) =>
+        unwrap_option(document.getElementById(element_name))
+            .addEventListener("click", () => {
+                let id = desmos_draw.add_shape(unwrap_option(builder()));
+
+                const selection_element = document.createElement("div");
+                const name = document.createElement("p");
+
+                name.innerHTML = element_name.split("_").slice(0, -1).map(
+                    (part) => unwrap_option(part[0]).toUpperCase() + part.substring(1).toLowerCase()
+                ).join(" ");
+
+                selection_element.appendChild(name);
+
+                const deleter = document.createElement("button");
+
+                deleter.onclick = () => {
+                    desmos_draw.remove_shape(id);
+                    shapes.removeChild(selection_element);
+                };
+
+                deleter.innerHTML = "<span class='material-symbols-outlined'>delete</span>";
+
+                selection_element.appendChild(deleter);
+
+                const selecter = document.createElement("input");
+                selecter.type = "radio";
+                selecter.name = "selected_element";
+
+                selecter.onclick = () => {
+                    desmos_draw.select_shape(id);
+                }
+
+                selection_element.appendChild(selecter);
+
+                shapes.appendChild(
+                    selection_element
+                );
+
+                //     <div>
+                //     <p>Hyperbola</p>
+                //     <button><span class="material-symbols-outlined">delete</span></button>
+                //     <input type="radio" name="selected_element" id="0"></input>
+                // </div>
+            })
+);
+
+// let math_function = new Add(new Add(new Value(1), new Variable("x")), new Sqrt(new Add(new Value(1), new Sqrt(new Variable("y")))));
+// console.log(math_function.to_string());
+// console.log(math_function.simplify({}).map((e) => e.to_string()));
+
+let start_game = () => {
+    start_game = () => { };
+    requestAnimationFrame(loop);
+};
+
+function resize_canvas(entries: ResizeObserverEntry[]) {
     const [canvas_resize] = entries;
     assert(is_some_option(canvas_resize), "The resize observer might not be targeted on the canvas!");
 
@@ -665,12 +1285,10 @@ const resize_canvas = (entries: ResizeObserverEntry[]) => {
     canvas_element.width = screen_size.inlineSize;
     canvas_element.height = screen_size.blockSize;
 
-    request_render();
+    start_game();
 };
 
 const canvas_observer = new ResizeObserver(resize_canvas);
 canvas_observer.observe(canvas_element);
 
-window.addEventListener("mousemove", () => request_render());
-window.addEventListener("mousedown", () => request_render());
-window.addEventListener("mouseup", () => request_render());
+// #endregion main.ts
