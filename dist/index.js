@@ -10,7 +10,7 @@ function assert(condition, message) {
     throw new AssertionError(message);
 }
 function map_option(option, mapper) {
-    return (is_some_option(option)) ? mapper(option) : option;
+    return (is_some_option(option)) ? mapper(option) : undefined;
 }
 function is_some_option(option) {
     return option !== undefined && option !== null;
@@ -19,15 +19,16 @@ function unwrap_option(option) {
     assert(is_some_option(option), "Called unwrap on a None value!");
     return option;
 }
+// #endregion options.ts
+// #region numbers.ts
+function bi_sort(a, b) {
+    return (a < b) ? [a, b] : [b, a];
+}
 class Extent {
     min;
     max;
     constructor(a, b) {
-        if (a > b) {
-            const temp = a;
-            a = b;
-            b = temp;
-        }
+        [a, b] = bi_sort(a, b);
         this.min = a;
         this.max = b;
     }
@@ -55,6 +56,8 @@ function modulo(dividend, divisor) {
 }
 class Variable {
     name;
+    static X = new Variable("x");
+    static Y = new Variable("y");
     constructor(name) {
         this.name = name;
     }
@@ -62,7 +65,7 @@ class Variable {
         return new Set([this.name]);
     }
     simplify(substitutions) {
-        return map_option(substitutions[this.name], (substitution) => [substitution]) ?? [new Variable(this.name)];
+        return map_option(substitutions[this.name], (substitution) => [substitution]) ?? [this];
     }
     to_string() {
         return this.name;
@@ -70,6 +73,9 @@ class Variable {
 }
 class Value {
     value;
+    static UNDEFINED = new Value(undefined);
+    static ONE = new Value(1);
+    static NEGATIVE_ONE = new Value(-1);
     constructor(value) {
         this.value = value;
     }
@@ -96,31 +102,32 @@ class BinaryOperator {
             ...this.b.variables()
         ]);
     }
+}
+class Add extends BinaryOperator {
     simplify(substitutions) {
         const a = this.a.simplify(substitutions);
         const b = this.b.simplify(substitutions);
         const simplifications = [];
         for (const a_simplification of a) {
             for (const b_simplification of b) {
-                for (const result of this.operate(a_simplification, b_simplification)) {
-                    simplifications.push(result);
-                }
+                simplifications.push((() => {
+                    if (a_simplification instanceof Value && b_simplification instanceof Value) {
+                        const a_value = a_simplification.value;
+                        const b_value = b_simplification.value;
+                        if (a_value === undefined || b_value === undefined) {
+                            return Value.UNDEFINED;
+                        }
+                        else {
+                            return new Value(a_value + b_value);
+                        }
+                    }
+                    else {
+                        return new Add(a_simplification, b_simplification);
+                    }
+                })());
             }
         }
         return simplifications;
-    }
-}
-class Add extends BinaryOperator {
-    operate(a, b) {
-        if (a instanceof Value && b instanceof Value) {
-            const a_value = a.value;
-            const b_value = b.value;
-            if (a_value === undefined || b_value === undefined) {
-                return [new Value(undefined)];
-            }
-            return [new Value(a_value + b_value)];
-        }
-        return [new Add(a, b)];
     }
     to_string() {
         return `(${this.a.to_string()} + ${this.b.to_string()})`;
@@ -128,20 +135,34 @@ class Add extends BinaryOperator {
 }
 class Subtract extends Add {
     constructor(a, b) {
-        super(a, new Multiply(b, new Value(-1)));
+        super(a, new Multiply(b, Value.NEGATIVE_ONE));
     }
 }
 class Divide extends BinaryOperator {
-    operate(a, b) {
-        if (a instanceof Value && b instanceof Value) {
-            const a_value = a.value;
-            const b_value = b.value;
-            if (a_value === undefined || b_value === undefined || b_value === 0) {
-                return [new Value(undefined)];
+    simplify(substitutions) {
+        const a = this.a.simplify(substitutions);
+        const b = this.b.simplify(substitutions);
+        const simplifications = [];
+        for (const a_simplification of a) {
+            for (const b_simplification of b) {
+                simplifications.push((() => {
+                    if (a_simplification instanceof Value && b_simplification instanceof Value) {
+                        const a_value = a_simplification.value;
+                        const b_value = b_simplification.value;
+                        if (a_value === undefined || b_value === undefined || b_value === 0) {
+                            return Value.UNDEFINED;
+                        }
+                        else {
+                            return new Value(a_value / b_value);
+                        }
+                    }
+                    else {
+                        return new Divide(a_simplification, b_simplification);
+                    }
+                })());
             }
-            return [new Value(a_value / b_value)];
         }
-        return [new Divide(a, b)];
+        return simplifications;
     }
     to_string() {
         return `(${this.a.to_string()} / ${this.b.to_string()})`;
@@ -149,7 +170,10 @@ class Divide extends BinaryOperator {
 }
 class Multiply extends Divide {
     constructor(a, b) {
-        super(a, new Divide(new Value(1), b));
+        super(a, new Divide(Value.ONE, b));
+    }
+    static square(expression) {
+        return new Multiply(expression, expression);
     }
 }
 class UnaryOperator {
@@ -160,46 +184,53 @@ class UnaryOperator {
     variables() {
         return this.value.variables();
     }
+}
+class PrincipalSqrt extends UnaryOperator {
     simplify(substitutions) {
         const value = this.value.simplify(substitutions);
         const simplifications = [];
         for (const simplification of value) {
-            for (const result of this.operate(simplification)) {
-                simplifications.push(result);
-            }
+            simplifications.push((() => {
+                if (simplification instanceof Value) {
+                    const value = simplification.value;
+                    return new Value((value === undefined || value < 0) ? undefined : Math.sqrt(value));
+                }
+                return new PrincipalSqrt(simplification);
+            })());
         }
         return simplifications;
-    }
-}
-class PrincipalSqrt extends UnaryOperator {
-    operate(expression) {
-        if (expression instanceof Value) {
-            const value = expression.value;
-            return [new Value((value === undefined) ? undefined : Math.sqrt(value))];
-        }
-        return [new PrincipalSqrt(expression)];
     }
     to_string() {
         return `(+sqrt(${this.value.to_string()}))`;
     }
 }
 class Sqrt extends PrincipalSqrt {
-    operate(value) {
-        return super.operate(value).flatMap((operated) => [
-            operated,
-            ...new Multiply(operated, new Value(-1)).simplify({})
+    simplify(substitutions) {
+        return super.simplify(substitutions).flatMap((simplification) => [
+            simplification,
+            ...new Multiply(simplification, Value.NEGATIVE_ONE).simplify(substitutions)
         ]);
     }
     to_string() {
         return `(sqrt(${this.value.to_string()}))`;
     }
 }
+// #endregion expressions.ts
+// #region draw.ts
+const POINT_ZERO = new DOMPoint(0, 0);
 CanvasRenderingContext2D.prototype.to_coordinate_space = function (point) {
+    // Below is kind of a hack! (But it's faster).
+    const { a: x_scale, d: y_scale, e: origin_screen_x, f: origin_screen_y } = this.getTransform();
+    return new DOMPoint((point.x - origin_screen_x) / x_scale, (point.y - origin_screen_y) / y_scale);
+    // Uncomment this for more correct behavior.
     // return point.matrixTransform(this.getTransform().inverse()) as CoordinateSpace;
 };
 CanvasRenderingContext2D.prototype.to_screen_space = function (point) {
-    return;
-    //return point.matrixTransform(this.getTransform()) as ScreenSpace;
+    // Below is kind of a hack! (But it's faster).
+    const { a: x_scale, d: y_scale, e: origin_screen_x, f: origin_screen_y } = this.getTransform();
+    return new DOMPoint(origin_screen_x + (point.x * x_scale), origin_screen_y + (point.y * y_scale));
+    // Uncomment this for more correct behavior.
+    // return point.matrixTransform(this.getTransform().inverse()) as CoordinateSpace;
 };
 CanvasRenderingContext2D.prototype.unit_size = function () {
     const matrix = this.getTransform();
@@ -218,15 +249,15 @@ DOMPoint.prototype.distance = function (other) {
     return Math.sqrt(this.squared_distance(other));
 };
 class Color {
+    static BIT_8_RANGE = new Extent(0, 255);
+    static PERCENTAGE_RANGE = new Extent(0, 1);
     red;
     green;
     blue;
     alpha;
     constructor(red, green, blue, alpha) {
-        const BIT_8_RANGE = new Extent(0, 255);
-        const PERCENTAGE_RANGE = new Extent(0, 1);
-        assert([red, green, blue].every((color) => BIT_8_RANGE.contains(color)), `One of your color values (${red}, ${green}, ${blue}) isn't in an 8-bit range!`);
-        assert(PERCENTAGE_RANGE.contains(alpha), `Your alpha value (${alpha}) isn't in the range of zero and one!`);
+        assert([red, green, blue].every((color) => Color.BIT_8_RANGE.contains(color)), `One of your color values (${red}, ${green}, ${blue}) isn't in an 8-bit range!`);
+        assert(Color.PERCENTAGE_RANGE.contains(alpha), `Your alpha value (${alpha}) isn't in the range of zero and one!`);
         this.red = red;
         this.green = green;
         this.blue = blue;
@@ -296,6 +327,41 @@ class Line {
         this.start = start;
         this.end = end;
     }
+    slope() {
+        const start = this.start;
+        const end = this.end;
+        const x_delta = end.x - start.x;
+        if (x_delta === 0) {
+            return undefined;
+        }
+        return (end.y - start.y) / x_delta;
+    }
+    to_latex() {
+        const slope = this.slope();
+        const y_intercept = this.y_intercept();
+        const start = this.start;
+        const end = this.end;
+        if (is_some_option(slope) && is_some_option(y_intercept)) {
+            let [start_x, end_x] = bi_sort(start.x, end.x);
+            return `y=(${slope}x+${y_intercept})\\\\left\\\\{${start_x}<x<${end_x}\\\\right\\\\}`;
+        }
+        let [start_y, end_y] = bi_sort(start.y, end.y);
+        return `x=${start.x}\\\\left\\\\{${start_y}<y<${end_y}\\\\right\\\\}`;
+    }
+    y_intercept() {
+        const start = this.start;
+        return map_option(this.slope(), (slope) => start.y - slope * start.x);
+    }
+    line_function() {
+        const slope = this.slope();
+        const y_intercept = this.y_intercept();
+        if (is_some_option(slope) && is_some_option(y_intercept)) {
+            return (x) => {
+                return slope * x + y_intercept;
+            };
+        }
+        return undefined;
+    }
 }
 class Path {
     points;
@@ -353,21 +419,15 @@ class LineGraphic {
         const line = this.line;
         const start = line.start;
         const end = line.end;
-        const x_delta = end.x - start.x;
         const canvas_element = canvas.canvas;
-        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0));
+        const top_left = canvas.to_coordinate_space(POINT_ZERO);
         const bottom_right = canvas.to_coordinate_space(new DOMPoint(canvas_element.width, canvas_element.height));
-        const is_90 = x_delta <= 0.001;
-        new LineSegmentGraphic((is_90) ? new Line(new DOMPoint(start.x, top_left.y), new DOMPoint(end.x, bottom_right.y)) : (() => {
-            const slope = (end.y - start.y) / x_delta;
-            const y_intercept = start.y - slope * start.x;
-            const line_function = (x) => {
-                return slope * x + y_intercept;
-            };
+        const line_function = line.line_function();
+        new LineSegmentGraphic((is_some_option(line_function)) ? (() => {
             const leftmost_x = top_left.x;
             const rightmost_x = bottom_right.x;
             return new Line(new DOMPoint(leftmost_x, line_function(leftmost_x)), new DOMPoint(rightmost_x, line_function(rightmost_x)));
-        })(), this.stroke_style).draw(canvas);
+        })() : new Line(new DOMPoint(start.x, top_left.y), new DOMPoint(end.x, bottom_right.y)), this.stroke_style).draw(canvas);
     }
 }
 class Ellipse {
@@ -378,6 +438,12 @@ class Ellipse {
         this.center = center;
         this.horizontal_radius = horizontal_radius;
         this.vertical_radius = vertical_radius;
+    }
+    to_latex() {
+        const center = this.center;
+        const horizontal_radius = this.horizontal_radius;
+        const vertical_radius = this.vertical_radius;
+        return `\\\\frac{\\\\left(x-${center.x}\\\\right)^{2}}{${horizontal_radius * horizontal_radius}}+\\\\frac{\\\\left(y-${center.y}\\\\right)^{2}}{${vertical_radius * vertical_radius}}=1`;
     }
 }
 class EllipseGraphic {
@@ -418,14 +484,14 @@ class MathFunctionGraphic {
     constructor(math_function, stroke_style, step) {
         this.stroke_style = stroke_style;
         const variables = math_function.variables();
-        assert(variables.size === 1 && (variables.has("x") || variables.has("y")), "You can't draw a function that doesn't have either an x or a y variable!");
+        assert(variables.size <= 1 && (variables.has("x") || variables.has("y")), "You can't draw a function that doesn't have either an x or a y variable!");
         this.function_variable = unwrap_option(variables.values().next().value);
         this.math_functions = math_function.simplify({});
-        this.step = step ?? 0.0003;
+        this.step = step ?? 0.3;
     }
     draw(canvas) {
         const canvas_element = canvas.canvas;
-        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0));
+        const top_left = canvas.to_coordinate_space(POINT_ZERO);
         const bottom_right = canvas.to_coordinate_space(new DOMPoint(canvas_element.width, canvas_element.height));
         const function_variable = this.function_variable;
         const x_based = function_variable === "x";
@@ -456,13 +522,56 @@ class MathFunctionGraphic {
         }
     }
 }
-// class Parabola {
-//     readonly math_function: Expression;
-//     constructor(
-//         axis: "x" | "y",
-//         vertex: DOMPoint,
-//     )
-// }
+class Parabola {
+    dependent_axis;
+    vertex;
+    point;
+    constructor(dependent_axis, vertex, point) {
+        this.dependent_axis = dependent_axis;
+        this.vertex = vertex;
+        this.point = point;
+    }
+    a() {
+        const point = this.point;
+        const vertex = this.vertex;
+        const x_difference = point.x - vertex.x;
+        const y_difference = point.y - vertex.y;
+        const [numerator, denominator] = (this.dependent_axis === "x") ? [x_difference, y_difference] : [y_difference, x_difference];
+        return numerator / (denominator * denominator);
+    }
+    to_latex() {
+        const vertex = this.vertex;
+        const a = this.a();
+        if (this.dependent_axis === "y") {
+            return `y=${a}\\\\left(x-${vertex.x}\\\\right)^{2}+${vertex.y}`;
+        }
+        return `x=${a}\\\\left(y-${vertex.y}\\\\right)^{2}+${vertex.x}`;
+    }
+}
+class ParabolaGraphic {
+    parabola;
+    stroke_style;
+    step;
+    constructor(parabola, stroke_style, step) {
+        this.parabola = parabola;
+        this.stroke_style = stroke_style;
+        this.step = step;
+    }
+    draw(canvas) {
+        const parabola = this.parabola;
+        const vertex = parabola.vertex;
+        const dependent_axis = parabola.dependent_axis;
+        const a = parabola.a();
+        const vertical = dependent_axis === "y";
+        const vertex_x_value = new Value(vertex.x);
+        const vertex_y_value = new Value(vertex.y);
+        const [variable, squared_vertex, added_vertex] = (vertical) ?
+            [Variable.X, vertex_x_value, vertex_y_value] :
+            [Variable.Y, vertex_y_value, vertex_x_value];
+        const equation = new Add(new Multiply(new Value(a), Multiply.square(new Subtract(variable, squared_vertex))), added_vertex);
+        new MathFunctionGraphic(equation, this.stroke_style, this.step).draw(canvas);
+    }
+}
 class NumberPlaneGraphic {
     axis_style;
     tick_line_style;
@@ -471,13 +580,13 @@ class NumberPlaneGraphic {
     constructor(axis_style, tick_line_style, unit_size, origin) {
         this.axis_style = axis_style;
         this.tick_line_style = tick_line_style;
-        this.origin = origin ?? new DOMPoint(0, 0);
+        this.origin = origin ?? POINT_ZERO;
         this.unit_size = unit_size ?? { width: 1, height: 1 };
     }
     draw(canvas) {
         const origin = this.origin;
         const unit_size = this.unit_size;
-        const top_left = canvas.to_coordinate_space(new DOMPoint(0, 0));
+        const top_left = canvas.to_coordinate_space(POINT_ZERO);
         const screen_unit_size = canvas.to_screen_space(new DOMPoint(top_left.x + unit_size.width, top_left.y + unit_size.height));
         const screen_origin = canvas.to_screen_space(origin);
         const canvas_element = canvas.canvas;
@@ -505,6 +614,7 @@ class NumberPlaneGraphic {
 }
 class Transform {
     matrix;
+    static IDENTITY = new Transform();
     constructor(matrix) {
         this.matrix = matrix;
     }
@@ -524,8 +634,8 @@ class Transform {
             scale: (scaling * to_flipper(flip_x)),
             skew: 0
         }, {
-            scale: (scaling * to_flipper(flip_y)),
-            skew: 0
+            skew: 0,
+            scale: (scaling * to_flipper(flip_y))
         }, translation);
     }
     draw(canvas) {
@@ -613,17 +723,22 @@ class DesmosLineSegment {
     constructor(line) {
         this.line = line;
     }
+    to_latex() {
+        return this.line.to_latex();
+    }
     properties() {
+        const line = this.line;
         return {
-            start: new PointProperty((point) => { this.line.start = point; }, () => this.line.start),
-            end: new PointProperty((point) => { this.line.end = point; }, () => this.line.end),
+            start: new PointProperty((point) => { line.start = point; }, () => line.start),
+            end: new PointProperty((point) => { line.end = point; }, () => line.end),
         };
     }
     controls() {
         const properties = this.properties();
+        const line = this.line;
         return {
-            start: new ControlPoint(() => this.line.start, properties.start),
-            end: new ControlPoint(() => this.line.end, properties.end)
+            start: new ControlPoint(() => line.start, properties.start),
+            end: new ControlPoint(() => line.end, properties.end)
         };
     }
     to_drawable(stroke_style, _) {
@@ -634,6 +749,9 @@ class DesmosEllipse {
     ellipse;
     constructor(ellipse) {
         this.ellipse = ellipse;
+    }
+    to_latex() {
+        return this.ellipse.to_latex();
     }
     properties() {
         return {
@@ -666,6 +784,41 @@ class DesmosEllipse {
     }
     to_drawable(stroke_style, fill_style) {
         return new EllipseGraphic(this.ellipse, stroke_style, fill_style);
+    }
+}
+class DesmosParabola {
+    parabola;
+    constructor(parabola) {
+        this.parabola = parabola;
+    }
+    to_latex() {
+        return this.parabola.to_latex();
+    }
+    properties() {
+        return {
+            dependent_axis: new AxisProperty("x", (horizontal) => {
+                const parabola = this.parabola;
+                parabola.dependent_axis = (horizontal > parabola.vertex.x) ? "x" : "y";
+            }, () => this.parabola.vertex.x + ((this.parabola.dependent_axis === "x") ? 1 : -1)),
+            vertex: new PointProperty((point) => { this.parabola.vertex = point; }, () => this.parabola.vertex),
+            point: new PointProperty((point) => { this.parabola.point = point; }, () => this.parabola.point)
+        };
+    }
+    controls() {
+        const properties = this.properties();
+        const parabola = this.parabola;
+        return {
+            dependent_axis: new ControlPoint(() => {
+                return new DOMPoint(parabola.vertex.x + ((parabola.dependent_axis === "x") ? 1 : -1), parabola.vertex.y);
+            }, properties.dependent_axis),
+            vertex: new ControlPoint(() => {
+                return parabola.vertex;
+            }, properties.vertex),
+            point: new ControlPoint(() => parabola.point, properties.point)
+        };
+    }
+    to_drawable(stroke_style, _) {
+        return new ParabolaGraphic(this.parabola, stroke_style);
     }
 }
 class DesmosDraw {
@@ -701,9 +854,9 @@ class DesmosDraw {
         const canvas_element = canvas.canvas;
         const width = canvas_element.width;
         const height = canvas_element.height;
-        const identity_transform = new Transform();
+        const identity_transform = Transform.IDENTITY;
         identity_transform.draw(canvas);
-        new RectangleGraphic(new Rectangle(new DOMPoint(0, 0), new DOMPoint(width, height)), { color: Color.BLACK, weight: 1 }, Color.WHITE).draw(canvas);
+        new RectangleGraphic(new Rectangle(POINT_ZERO, new DOMPoint(width, height)), { color: Color.BLACK, weight: 1 }, Color.WHITE).draw(canvas);
         const middle_x = width / 2;
         const middle_y = height / 2;
         const unit_size = 30;
@@ -711,14 +864,6 @@ class DesmosDraw {
         cartesian_transform.draw(canvas);
         const line_color = Color.monochrome(200);
         new NumberPlaneGraphic({ color: line_color, weight: 2 }, { color: line_color, weight: 1 }).draw(canvas);
-        // new MathFunctionGraphic(
-        //     new Sqrt(new Subtract(new Value(2), new Multiply(new Variable("x"), new Variable("x")))),
-        //     // new Multiply(new Variable("x"), new Variable("x")),
-        //     {
-        //         color: Color.BLACK,
-        //         weight: 1
-        //     }
-        // ).draw(canvas);
         map_option(this.selected_controls, (selected_controls) => {
             for (const control_point of Object.values(selected_controls)) {
                 control_point.to_drawable().draw(canvas);
@@ -738,7 +883,7 @@ const desmos_draw = new DesmosDraw();
 const TARGET_FPS = 60;
 const FRAME_TIME = 1000 / TARGET_FPS;
 let previous_time_ms = 0;
-let mouse_position = new DOMPoint(0, 0);
+let mouse_position = POINT_ZERO;
 let is_down = false;
 window.addEventListener("mousemove", (event) => {
     const canvas_rect = canvas_element.getBoundingClientRect();
@@ -756,6 +901,7 @@ function loop(timestamp) {
                 is_down: is_down
             }
         });
+        // console.log("a");
         desmos_draw.draw(canvas);
     }
     requestAnimationFrame(loop);
@@ -764,8 +910,8 @@ function loop(timestamp) {
 const shapes = unwrap_option(document.getElementById("shapes"));
 [
     ["line_tool", () => new DesmosLineSegment(new Line(new DOMPoint(-1, -1), new DOMPoint(1, 1)))],
-    ["ellipse_tool", () => new DesmosEllipse(new Ellipse(new DOMPoint(0, 0), 1, 1))],
-    ["parabola_tool", () => undefined],
+    ["ellipse_tool", () => new DesmosEllipse(new Ellipse(POINT_ZERO, 1, 1))],
+    ["parabola_tool", () => new DesmosParabola(new Parabola("y", POINT_ZERO, new DOMPoint(1, 1)))],
     ["hyperbola_tool", () => undefined]
 ].map(([element_name, builder]) => unwrap_option(document.getElementById(element_name))
     .addEventListener("click", () => {
@@ -795,7 +941,15 @@ const shapes = unwrap_option(document.getElementById("shapes"));
     //     <input type="radio" name="selected_element" id="0"></input>
     // </div>
 }));
-// let math_function = new Add(new Add(new Value(1), new Variable("x")), new Sqrt(new Add(new Value(1), new Sqrt(new Variable("y")))));
+unwrap_option(document.getElementById("export")).onclick = () => {
+    const latex_outputs = Array
+        .from(desmos_draw.shapes.values())
+        .map((shape) => `{type: "expression", latex: "${shape.to_latex()}"}`).join(",\n");
+    navigator.clipboard.writeText(`state = Calc.getState(); state.expressions.list.push(${latex_outputs}); Calc.setState(state);`).then(() => {
+        alert("Copied to clipboard!");
+    });
+};
+// let math_function = new Add(new Add(new Value(1), Variable.X), new Sqrt(new Add(new Value(1), new Sqrt(Variable.Y))));
 // console.log(math_function.to_string());
 // console.log(math_function.simplify({}).map((e) => e.to_string()));
 let start_game = () => {
