@@ -749,7 +749,7 @@ class MathFunctionGraphic implements Drawable {
         this.function_variable = unwrap_option(variables.values().next().value) as "x" | "y";
         this.math_functions = math_function.simplify({});
 
-        this.step = step ?? 0.3;
+        this.step = step ?? 0.1;
     }
 
     draw(canvas: CanvasRenderingContext2D): void {
@@ -834,12 +834,16 @@ class Parabola implements ToLatex {
     to_latex(): string {
         const vertex = this.vertex;
         const a = this.a();
+        const point = this.point;
 
         if (this.dependent_axis === "y") {
-            return `y=${a}\\\\left(x-${vertex.x}\\\\right)^{2}+${vertex.y}`;
+            const [start_y, end_y] = bi_sort(vertex.y, point.y);
+
+            return `y=\\\\left(${a}\\\\left(x-${vertex.x}\\\\right)^{2}+${vertex.y}\\\\right)\\\\left\\\\{${start_y}<y<${end_y}\\\\right\\\\}`;
         }
 
-        return `x=${a}\\\\left(y-${vertex.y}\\\\right)^{2}+${vertex.x}`;
+        const [start_x, end_x] = bi_sort(vertex.x, point.x);
+        return `x=\\\\left(${a}\\\\left(y-${vertex.y}\\\\right)^{2}+${vertex.x}\\\\right)\\\\left\\\\{${start_x}<x<${end_x}\\\\right\\\\}`;
     }
 }
 
@@ -867,7 +871,8 @@ class ParabolaGraphic implements Drawable {
             [Variable.X, vertex_x_value, vertex_y_value] :
             [Variable.Y, vertex_y_value, vertex_x_value];
 
-        const clamper = (vertical) ? new Extent(vertex.y, point.y) : new Extent(vertex.x, point.x);
+        let clamper = (vertical) ? new Extent(vertex.y, point.y) : new Extent(vertex.x, point.x);
+        clamper = new Extent(clamper.min, clamper.max);
 
         const equation = new RestrictTo(new Add(
             new Multiply(
